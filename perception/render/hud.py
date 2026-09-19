@@ -10,7 +10,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from render.layers import DIM, PANEL, TEXT, BGR, Layer
+from render.layers import DIM, PANEL, TEXT, BGR, Layer, ui_scale
 
 # States that mean the behaviour is doing its job right now.
 LIVE = {"ACTIVE", "TRACKING", "ARMED", "LOCKED", "REACHED"}
@@ -35,37 +35,48 @@ class Hud(Layer):
 
     def draw(self, frame: np.ndarray) -> None:
         h, w = frame.shape[:2]
-        self._top_bar(frame, w)
-        self._chips(frame, h)
+        # Everything scales with the frame: a 1080p phone clip and a webcam
+        # must both be readable from the back of a room.
+        k = ui_scale(frame)
+        self._top_bar(frame, w, k)
+        self._chips(frame, h, k)
         # The frame centre is what a track behaviour steers toward.
-        cv2.drawMarker(frame, (w // 2, h // 2), DIM, cv2.MARKER_CROSS, 18, 1)
+        cv2.drawMarker(frame, (w // 2, h // 2), DIM, cv2.MARKER_CROSS,
+                       int(18 * k), max(1, int(k)))
 
-    def _top_bar(self, frame: np.ndarray, w: int) -> None:
-        cv2.rectangle(frame, (0, 0), (w, 34), PANEL, -1)
-        x = 10
+    def _top_bar(self, frame: np.ndarray, w: int, k: float) -> None:
+        bar, base = int(34 * k), int(23 * k)
+        cv2.rectangle(frame, (0, 0), (w, bar), PANEL, -1)
+        x = int(10 * k)
         if not self.camera_ok:
-            x = _text(frame, "NO CAMERA", x, 23, BAD, 0.6, 2)
+            x = _text(frame, "NO CAMERA", x, base, BAD, 0.6 * k, max(2, int(2 * k)))
         elif self.model:
-            x = _text(frame, self.model, x, 23, TEXT, 0.6, 2)
+            x = _text(frame, self.model, x, base, TEXT, 0.6 * k, max(2, int(2 * k)))
+        fps_text = f"{self.fps:.0f} fps"
+        (fw, _), _ = cv2.getTextSize(fps_text, cv2.FONT_HERSHEY_SIMPLEX,
+                                     0.5 * k, max(1, int(k)))
         if self.text:
             # The instruction, trimmed to whatever space is left.
-            room = max(w - x - 90, 40)
-            _text(frame, _fit(self.text, room), x + 14, 23, DIM, 0.5, 1)
-        _text(frame, f"{self.fps:.0f} fps", w - 78, 23, TEXT, 0.5, 1)
+            room = max(w - x - fw - int(40 * k), int(40 * k))
+            _text(frame, _fit(self.text, room, 0.5 * k), x + int(14 * k), base,
+                  DIM, 0.5 * k, max(1, int(k)))
+        _text(frame, fps_text, w - fw - int(14 * k), base, TEXT, 0.5 * k, max(1, int(k)))
 
-    def _chips(self, frame: np.ndarray, h: int) -> None:
+    def _chips(self, frame: np.ndarray, h: int, k: float) -> None:
         if not self.chips:
             return
         rows = self.chips[:6]
-        top = h - 22 * len(rows) - 8
+        row_h = int(22 * k)
+        top = h - row_h * len(rows) - int(8 * k)
         cv2.rectangle(frame, (0, top), (frame.shape[1], h), PANEL, -1)
         for i, (label, state, colour) in enumerate(rows):
-            y = top + 22 * i + 16
+            y = top + row_h * i + int(16 * k)
             live = state in LIVE
             dot = colour if live else (WARN if state in TRYING else BAD)
-            cv2.circle(frame, (16, y - 5), 5, dot, -1)
-            x = _text(frame, label, 28, y, TEXT if live else DIM, 0.48, 1)
-            _text(frame, state, x + 10, y, dot, 0.44, 1)
+            cv2.circle(frame, (int(16 * k), y - int(5 * k)), max(3, int(5 * k)), dot, -1)
+            x = _text(frame, label, int(28 * k), y, TEXT if live else DIM,
+                      0.48 * k, max(1, int(k)))
+            _text(frame, state, x + int(10 * k), y, dot, 0.44 * k, max(1, int(k)))
 
 
 def _text(frame, s, x, y, colour, scale, thick) -> int:
@@ -76,6 +87,6 @@ def _text(frame, s, x, y, colour, scale, thick) -> int:
 
 
 def _fit(s: str, px: int, scale: float = 0.5) -> str:
-    """Trim to fit, with an ellipsis. Roughly 9px per character at 0.5."""
-    limit = max(int(px / (9 * scale / 0.5)) // 1, 8)
-    return s if len(s) <= limit else s[: limit - 1] + "…"
+    """Trim to fit, with an ellipsis. Roughly 9px per character at scale 0.5."""
+    limit = max(int(px / max(9 * scale / 0.5, 1e-6)), 8)
+    return s if len(s) <= limit else s[: limit - 1] + "..."

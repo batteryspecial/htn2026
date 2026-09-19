@@ -110,8 +110,8 @@ class YoloeDetector(Detector):
             quantize=quantize(),
             verbose=False,
         )[0]
-        d = sv.Detections.from_ultralytics(result)
-        # ponytail: masks dropped, we only publish boxes. The Cutie stretch for
-        # `locked` needs them back, which is deleting this line.
-        d.mask = None
-        return ensure_class_names(d)
+        # Masks are kept: YOLOE-seg produces them anyway, the render layer
+        # reads much better than boxes on a projector, and `render.mask`
+        # defaults to on. They are the single largest thing in a Detections,
+        # so if frame time suffers this is the first thing to drop.
+        return ensure_class_names(sv.Detections.from_ultralytics(result))

@@ -121,6 +121,8 @@ class Behavior:
         self._misses = 0
         self._matches = 0
         self._track_ids: list[int] = []
+        self._ever_matched = False
+        self._clock_offset: float | None = None
         self.validate()
 
     # 1. Setup ----------------------------------------------------------
@@ -154,6 +156,13 @@ class Behavior:
 
     # 3. Per frame ------------------------------------------------------
     def step(self, frame: Frame) -> Outcome:
+        if self._clock_offset is None:
+            # A behaviour is constructed on the worker, against wall time, and
+            # first runs on the loop, against the loop's clock. Rebase on the
+            # first frame so every duration it measures is in one clock.
+            self._clock_offset = frame.now - self.now
+            self.since += self._clock_offset
+            self.started += self._clock_offset
         self.now = frame.now
         if self.state == "PAUSED":
             return Outcome()
@@ -163,7 +172,32 @@ class Behavior:
         self._matches = len(idx)
         ids = frame.tracks.tracker_id
         self._track_ids = [int(ids[i]) for i in idx] if ids is not None else []
+        self._check_barren(frame)
         return outcome
+
+    #: How long a behaviour may match nothing before it says so.
+    barren_after_s: float = 4.0
+
+    def _check_barren(self, frame: Frame) -> None:
+        """Say so when a selector has never matched anything.
+
+        Measured on real footage: YOLOE finds a rubber duck for "yellow duck"
+        in every frame and for "duck" in none. A behaviour that silently does
+        nothing is the worst failure on stage, because it looks like the
+        pipeline is working. Surfacing it gives the agent something to read
+        and rephrase against.
+        """
+        if self._matches:
+            self._ever_matched = True
+            if self.detail and self.detail.startswith("nothing matches"):
+                self.detail = None
+            return
+        if self._ever_matched or self.state == "PAUSED" or self.detail:
+            return
+        if frame.now - self.started >= self.barren_after_s:
+            self.detail = (f"nothing matches {self.subject.summary()!r} — "
+                           f"try a more specific phrase")
+            log.warning("behaviour %s: %s", self.id, self.detail)
 
     def on_frame(self, frame: Frame, idx: np.ndarray, outcome: Outcome) -> None:
         """Kind-specific work. `idx` indexes the tracks matching this subject."""

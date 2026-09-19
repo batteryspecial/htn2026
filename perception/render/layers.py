@@ -37,6 +37,16 @@ TEXT: BGR = (235, 235, 235)
 PANEL: BGR = (24, 24, 24)
 
 
+#: Overlays are authored against this frame height and scaled from it, so the
+#: feed reads the same on a webcam, a 1080p phone clip and a projector.
+REFERENCE_H = 720
+
+
+def ui_scale(frame: np.ndarray) -> float:
+    """How much to enlarge overlays for this frame."""
+    return max(0.75, min(frame.shape[0] / REFERENCE_H, 3.0))
+
+
 def hue_of(color: BGR) -> int:
     """Hue on OpenCV's 0-179 circle."""
     return int(cv2.cvtColor(np.uint8([[list(color)]]), cv2.COLOR_BGR2HSV)[0, 0, 0])
@@ -145,10 +155,11 @@ class Boxes(Layer):
     emphasis: int | None = None  # index drawn thicker: the chosen subject
 
     def draw(self, frame: np.ndarray) -> None:
+        k = ui_scale(frame)
         for i, box in enumerate(self.boxes.astype(int)):
             x1, y1, x2, y2 = box
             t = self.thickness + 2 if i == self.emphasis else self.thickness
-            cv2.rectangle(frame, (x1, y1), (x2, y2), self.color, t)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), self.color, max(1, int(t * k)))
             if i < len(self.labels) and self.labels[i]:
                 _tag(frame, self.labels[i], (x1, y1), self.color)
 
@@ -162,11 +173,12 @@ class Trails(Layer):
     color: BGR = PALETTE[0]
 
     def draw(self, frame: np.ndarray) -> None:
+        thick = max(2, int(2 * ui_scale(frame)))
         for path in self.paths:
             if len(path) < 2:
                 continue
             pts = np.array(path, np.int32).reshape(-1, 1, 2)
-            cv2.polylines(frame, [pts], False, self.color, 2, cv2.LINE_AA)
+            cv2.polylines(frame, [pts], False, self.color, thick, cv2.LINE_AA)
 
 
 @dataclass
@@ -254,7 +266,8 @@ class Arrow(Layer):
         tip = (anchor[0] + dx * size, anchor[1] + dy * size)
         tail = (anchor[0] - dx * size, anchor[1] - dy * size)
         cv2.arrowedLine(frame, tail, tip, colour,
-                        max(3, int(3 + 6 * self.strength)), cv2.LINE_AA, tipLength=0.4)
+                        max(3, int((3 + 6 * self.strength) * ui_scale(frame))),
+                        cv2.LINE_AA, tipLength=0.4)
         if self.label:
             _tag(frame, self.label, (anchor[0] - size, anchor[1] + size + 6), colour)
 
@@ -270,24 +283,29 @@ class Alert(Layer):
 
     def draw(self, frame: np.ndarray) -> None:
         h, w = frame.shape[:2]
-        t = max(2, int(14 * self.intensity))
+        k = ui_scale(frame)
+        t = max(2, int(14 * self.intensity * k))
         cv2.rectangle(frame, (0, 0), (w - 1, h - 1), self.color, t)
         if self.text:
-            (tw, th), _ = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            x, y = (w - tw) // 2, 70
-            cv2.rectangle(frame, (x - 12, y - th - 10), (x + tw + 12, y + 10), self.color, -1)
-            cv2.putText(frame, self.text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        (255, 255, 255), 2, cv2.LINE_AA)
+            scale, thick = 0.7 * k, max(2, int(2 * k))
+            (tw, th), _ = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+            x, y = (w - tw) // 2, int(70 * k)
+            cv2.rectangle(frame, (x - int(12 * k), y - th - int(10 * k)),
+                          (x + tw + int(12 * k), y + int(10 * k)), self.color, -1)
+            cv2.putText(frame, self.text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale,
+                        (255, 255, 255), thick, cv2.LINE_AA)
 
 
 def _tag(frame: np.ndarray, text: str, at: tuple[int, int], color: BGR) -> None:
     """A filled label chip that stays readable over any background."""
+    k = ui_scale(frame)
+    scale, thick, pad = 0.45 * k, max(1, int(k)), int(8 * k)
     x, y = at
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-    y = max(y, th + 8)
-    cv2.rectangle(frame, (x, y - th - 8), (x + tw + 10, y), color, -1)
-    cv2.putText(frame, text, (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                PANEL, 1, cv2.LINE_AA)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    y = max(y, th + pad)
+    cv2.rectangle(frame, (x, y - th - pad), (x + tw + pad + 4, y), color, -1)
+    cv2.putText(frame, text, (x + int(5 * k), y - int(5 * k)),
+                cv2.FONT_HERSHEY_SIMPLEX, scale, PANEL, thick, cv2.LINE_AA)
 
 
 def no_signal(shape: tuple[int, int] = (480, 640)) -> np.ndarray:
@@ -295,10 +313,11 @@ def no_signal(shape: tuple[int, int] = (480, 640)) -> np.ndarray:
     icon on stage, and this keeps every drawing call inside render/."""
     frame = np.zeros((*shape, 3), np.uint8)
     h, w = shape
-    text = "NO SIGNAL"
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 2)
+    text, k = "NO SIGNAL", max(0.75, min(h / REFERENCE_H, 3.0))
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.2 * k, max(2, int(2 * k)))
     cv2.putText(frame, text, ((w - tw) // 2, (h + th) // 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.2, (70, 70, 240), 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 1.2 * k, (70, 70, 240),
+                max(2, int(2 * k)), cv2.LINE_AA)
     return frame
 
 

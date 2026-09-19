@@ -1,0 +1,54 @@
+{
+  "name": "duck",
+  "clip": "clips/duck.mp4",
+  "model": "yoloe",
+  "duration_s": 14,
+  "steps": [
+    {
+      "at": 1.0,
+      "add": {
+        "kind": "highlight",
+        "render": {
+          "label": "duck"
+        },
+        "subject": {
+          "detect": [
+            "yellow duck",
+            "rubber duck"
+          ]
+        }
+      }
+    },
+    {
+      "at": 6.0,
+      "add": {
+        "kind": "track",
+        "render": {
+          "label": "follow duck"
+        },
+        "subject": {
+          "detect": [
+            "yellow duck",
+            "rubber duck"
+          ],
+          "pick": "ref"
+        }
+      }
+    }
+  ],
+  "expect": {
+    "b1": {
+      "reaches": "ACTIVE",
+      "min_matches": 1,
+      "max_matches": 1,
+      "acquire_under_ms": 2000
+    },
+    "b2": {
+      "reaches": "TRACKING",
+      "acquire_under_ms": 2000,
+      "events": [
+        "acquired"
+      ]
+    }
+  }
+}

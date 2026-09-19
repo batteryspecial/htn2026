@@ -352,3 +352,29 @@ def test_declared_states_cover_the_contract():
     allowed = set(get_args(BehaviorState))
     for kind, cls in KINDS.items():
         assert set(cls.states) <= allowed, f"{kind} declares an unknown state"
+
+
+# 8. A selector that finds nothing must say so ----------------------------
+def test_a_selector_that_never_matches_says_so(rig):
+    """Measured on real footage: YOLOE finds a rubber duck for "yellow duck"
+    in every frame and for "duck" in none. Silence looks like success."""
+    b = rig.add(detect=("nothing_like_this",))
+    rig.settle()
+    rig.frames(30, seen=boxes(THING), dt=0.2)
+    assert "nothing matches" in (rig.view(b).detail or "")
+
+
+def test_a_selector_that_does_match_stays_quiet(rig):
+    b = rig.add(detect=("thing",))
+    rig.settle()
+    rig.frames(30, seen=boxes(THING), dt=0.2)
+    assert rig.view(b).detail is None
+
+
+def test_the_complaint_clears_once_something_shows_up(rig):
+    b = rig.add(detect=("thing",))
+    rig.settle()
+    rig.frames(30, seen=boxes(), dt=0.2)
+    assert "nothing matches" in (rig.view(b).detail or "")
+    rig.frames(4, seen=boxes(THING))
+    assert rig.view(b).detail is None
