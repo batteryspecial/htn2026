@@ -1,0 +1,2 @@
+# Holds a live API key. The repo is public — never commit this.
+config.local.js
