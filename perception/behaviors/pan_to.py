@@ -82,7 +82,8 @@ class PanTo(Behavior):
             outcome.events.append(self.event(
                 "reached", frame, None,
                 detail=f"{self.label}: turned {turned:+.0f}° of {self.target_deg:+.0f}°",
-                turned_deg=round(turned, 1), matches=int(len(idx))))
+                turned_deg=round(turned, 1), matches=int(len(idx))
+            ))
         else:
             outcome.motor = self._motor(remaining)
 
@@ -94,12 +95,15 @@ class PanTo(Behavior):
         scale = min(1.0, abs(remaining) / max(self.target_deg, 1e-6))
         rate = MAX_RATE_DEG_S * scale * (1.0 if remaining > 0 else -1.0)
         side = "right" if remaining > 0 else "left"
-        return MotorCommand(rate_deg_s=rate,
-                            reason=f"pan {side} {abs(remaining):.0f}°")
+        return MotorCommand(
+            rate_deg_s=rate,
+            reason=f"pan {side} {abs(remaining):.0f}°"
+        )
 
     def _draw(self, frame: Frame, idx: np.ndarray, outcome: Outcome) -> None:
         if len(idx) and self.spec.render.boxes:
             outcome.layers.append(Boxes(
                 boxes=frame.tracks[idx].xyxy,
                 labels=[self.label] + [""] * (len(idx) - 1),
-                color=self.color))
+                color=self.color
+            ))

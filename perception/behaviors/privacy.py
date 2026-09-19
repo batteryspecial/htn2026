@@ -43,7 +43,8 @@ class Privacy(Behavior):
         mean an unscored face is never blurred, which is the wrong way to fail.
         """
         candidates = self.filter(frame, self.subject.model_copy(
-            update={"ref_id": None, "pick": "all"}))
+            update={"ref_id": None, "pick": "all"}
+        ))
         if len(candidates) == 0:
             self.data["blurred"] = 0
             return
@@ -51,8 +52,7 @@ class Privacy(Behavior):
         keep = []
         for i in candidates:
             tid = int(ids[i]) if ids is not None else -1
-            if frame.bank.ref_match(tid, [self.keep_ref],
-                                    self.subject.ref_min_sim) is True:
+            if frame.bank.ref_match(tid, [self.keep_ref], self.subject.ref_min_sim) is True:
                 keep.append(int(i))
         hide = np.array([int(i) for i in candidates if int(i) not in keep], dtype=int)
         self.data["blurred"] = int(len(hide))
@@ -60,5 +60,4 @@ class Privacy(Behavior):
         if len(hide):
             outcome.layers.append(Blur(boxes=frame.tracks[hide].xyxy, mode=self.mode))
         if keep and self.spec.render.boxes:
-            outcome.layers.append(Boxes(boxes=frame.tracks[np.array(keep)].xyxy,
-                                        labels=[self.label], color=self.color))
+            outcome.layers.append(Boxes(boxes=frame.tracks[np.array(keep)].xyxy, labels=[self.label], color=self.color))

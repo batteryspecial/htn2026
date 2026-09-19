@@ -207,3 +207,38 @@ def test_every_refusal_carries_a_reason_the_agent_can_act_on(client):
         r = client.post("/behaviors", json=payload)
         assert r.status_code == 422
         assert expect in r.json()["detail"].lower() or expect in r.json()["detail"]
+
+
+# 6. "all" — the request the old contract could not express ----------------
+def test_select_all_becomes_a_highlight_not_a_track():
+    """"Track all faces" was structurally inexpressible: every select rule
+    picked exactly one, and every target became a `track`, which follows one
+    thing by definition. It looked like the detector had failed."""
+    behaviors, _ = to_behaviors(taskspec(targets=[
+        {"ref": "all faces", "detect": ["person's face"], "select": "all"}]))
+    assert behaviors[0].kind == "highlight"
+    assert behaviors[0].subject.pick == "all"
+
+
+def test_every_other_select_still_follows_one_thing():
+    for rule in ("largest", "most_centered", "highest_conf", "locked"):
+        behaviors, _ = to_behaviors(taskspec(targets=[
+            {"ref": "x", "detect": ["person"], "select": rule}]))
+        assert behaviors[0].kind == "track", rule
+
+
+def test_an_unknown_select_degrades_and_says_so():
+    behaviors, notes = to_behaviors(taskspec(targets=[
+        {"ref": "x", "detect": ["person"], "select": "vibes"}]))
+    assert behaviors[0].kind == "track" and behaviors[0].subject.pick == "largest"
+    assert any("vibes" in n for n in notes)
+
+
+def test_all_faces_end_to_end(client):
+    r = client.post("/spec", json={"instruction_id": "i1", "spec": taskspec(
+        targets=[{"ref": "all faces", "detect": ["thing"], "select": "all"}])})
+    assert r.status_code == 202
+    client.rig.settle()
+    client.rig.frames(4, seen=boxes(("thing", 200, 200, 60), ("thing", 450, 300, 60)))
+    view = client.get("/state").json()["behaviors"][0]
+    assert view["kind"] == "highlight" and view["matches"] == 2

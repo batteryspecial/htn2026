@@ -402,6 +402,44 @@ class DescribeResult(BaseModel):
     detail: str | None = None
 
 
+class PhraseResult(BaseModel):
+    """How one wording fared against the frame in front of the camera."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phrase: str
+    found: int = 0
+    mean_conf: float = 0.0
+    max_conf: float = 0.0
+    #: Largest match as a fraction of the frame, so "found but tiny" is
+    #: distinguishable from "found properly".
+    max_area: float = 0.0
+
+
+class ProbeRequest(BaseModel):
+    """POST /probe. Does this wording actually find anything, right now?
+
+    The debugging loop for the failure that looks like a broken pipeline and
+    is really a word the detector has no match for. Measured on this project:
+    "duck" finds nothing in frames where "yellow duck" finds it every time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    phrases: Annotated[list[str], Field(min_length=1, max_length=6)]
+
+
+class ProbeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ts: float = Field(default_factory=time.time)
+    results: list[PhraseResult] = Field(default_factory=list)
+    #: The wording that worked best, ready to put straight into `detect`.
+    best: str | None = None
+    advice: str = ""
+    detail: str | None = None
+
+
 class HudText(BaseModel):
     """POST /hud. The instruction the operator typed, shown on the frame."""
 

@@ -24,7 +24,15 @@ log = logging.getLogger("perception.legacy")
 #: Old select rules to new pick rules. `highest_conf` has no equivalent —
 #: nothing downstream ranked by confidence — so it degrades to `largest` and
 #: says so rather than silently picking something else.
+#:
+#: `all` is not in the original TaskSpec enum. It is accepted here because
+#: without it the contract cannot express "track *all* faces" at all: every
+#: other rule picks exactly one, and every target became a `track` behaviour,
+#: which follows one thing by definition. Adding it to the frontend's enum is
+#: a one-line change there; accepting it here means the moment it does, it
+#: works.
 PICK = {
+    "all": "all",
     "largest": "largest",
     "most_centered": "most_centered",
     "highest_conf": "largest",
@@ -58,6 +66,10 @@ def to_behaviors(spec: dict[str, Any]) -> tuple[list[BehaviorSpec], list[str]]:
             raise ValueError(f"targets[{i}].detect is empty")
 
         select = t.get("select", "largest")
+        if select not in PICK:
+            notes.append(f"targets[{i}].select {select!r} is not a known rule; "
+                         f"using 'largest'")
+            select = "largest"
         if select == "highest_conf":
             notes.append(f"targets[{i}].select 'highest_conf' has no equivalent; "
                          f"using 'largest'")
@@ -77,8 +89,13 @@ def to_behaviors(spec: dict[str, Any]) -> tuple[list[BehaviorSpec], list[str]]:
         if relate and relate.get("if_contains"):
             subject["relate"] = {"contains": relate["if_contains"]}
 
+        # "all" means every match, which is `highlight`. Everything else
+        # follows a single subject, which is `track`. Emitting `track` for an
+        # "all" request would silently follow one of them and look like the
+        # detector had failed.
+        kind = "highlight" if select == "all" else "track"
         out.append(BehaviorSpec(
-            kind="track", subject=subject,
+            kind=kind, subject=subject,
             render={"label": t.get("ref") or "+".join(detect)},
         ))
     return out, notes

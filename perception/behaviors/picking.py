@@ -53,6 +53,9 @@ def _latched(dets: sv.Detections, behavior) -> int | None:
     idx = int(np.argmax(dets.box_area))
     if ids is not None and idx < len(ids):
         behavior.locked_track_id = int(ids[idx])
-        log.info("%s latched onto track %s", getattr(behavior, "id", "?"),
-                 behavior.locked_track_id)
+        log.info(
+            "%s latched onto track %s",
+            getattr(behavior, "id", "?"),
+            behavior.locked_track_id
+        )
     return idx

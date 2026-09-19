@@ -51,9 +51,11 @@ class Highlight(Behavior):
 
     def _labels(self, subset) -> list[str]:
         names, ids = subset.data.get("class_name"), subset.tracker_id
-        return [f"{names[i] if names is not None else '?'}"
-                f"{f'#{ids[i]}' if ids is not None else ''}"
-                for i in range(len(subset))]
+        return [
+            f"{names[i] if names is not None else '?'}"
+            f"{f'#{ids[i]}' if ids is not None else ''}"
+                for i in range(len(subset))
+        ]
 
     @staticmethod
     def _track_ids_of(subset) -> list[int]:
