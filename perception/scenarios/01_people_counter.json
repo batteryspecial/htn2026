@@ -4,12 +4,10 @@
   "model": "yoloe",
   "duration_s": 12,
   "steps": [
-    {"at": 1.0, "add": {"behavior_id": "count", "kind": "highlight",
-                        "label": "people",
+    {"at": 1.0, "add": {"kind": "highlight", "render": {"label": "people"},
                         "subject": {"detect": ["person"]}}}
   ],
   "expect": {
-    "count": {"reaches": "active", "min_matches": 2, "acquire_under_ms": 2000,
-              "events": ["acquired"]}
+    "b1": {"reaches": "ACTIVE", "min_matches": 2, "acquire_under_ms": 2000}
   }
 }

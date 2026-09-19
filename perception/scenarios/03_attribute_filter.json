@@ -1,19 +1,18 @@
 {
-  "name": "attribute filter: everyone except one described person",
+  "name": "attribute filter with competing phrases",
   "clip": "clips/real.mp4",
   "model": "yoloe",
-  "duration_s": 20,
+  "duration_s": 18,
   "steps": [
-    {"at": 1.0, "add": {"behavior_id": "all", "kind": "highlight",
-                        "label": "everyone",
+    {"at": 1.0, "add": {"kind": "highlight", "render": {"label": "everyone"},
                         "subject": {"detect": ["person"]}}},
-    {"at": 6.0, "add": {"behavior_id": "filtered", "kind": "highlight",
-                        "label": "not in a dark jacket",
+    {"at": 5.0, "add": {"kind": "highlight", "render": {"label": "pale coat"},
                         "subject": {"detect": ["person"],
+                                    "include": ["a person wearing a cream coat"],
                                     "exclude": ["a person wearing a dark jacket"]}}}
   ],
   "expect": {
-    "all":      {"reaches": "active", "min_matches": 2},
-    "filtered": {"reaches": "active", "min_matches": 1}
+    "b1": {"reaches": "ACTIVE", "min_matches": 2},
+    "b2": {"reaches": "ACTIVE", "min_matches": 1, "max_matches": 1}
   }
 }

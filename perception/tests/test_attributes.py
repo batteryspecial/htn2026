@@ -251,3 +251,39 @@ def test_without_clip_an_attribute_behavior_never_falsely_matches(tmp_path):
         assert r.view(b).matches == 0
     finally:
         r.close()
+
+
+# 4. Competing phrases ----------------------------------------------------
+def test_a_winning_include_beats_a_high_exclude(bank):
+    """The measured case: a cream coat scores 0.78 for "dark jacket", over any
+    sane bar, but 1.00 for "cream coat". Comparison gets it right where an
+    absolute threshold cannot, because lighting moves every score together."""
+    frame, dets = frame_and_dets("red")
+    bank.update(frame, dets, now=0.0)
+    scores = bank.scores_for(1)
+    assert scores["red"] > scores["blue"]
+    assert bank.matches(1, ["red"], ["blue"], 0.6) is True
+    assert bank.matches(1, ["blue"], ["red"], 0.6) is False
+
+
+def test_a_competing_include_still_has_to_clear_the_bar(bank):
+    """Winning a comparison is not enough if nothing fits at all."""
+    frame, dets = frame_and_dets("red")
+    bank.update(frame, dets, now=0.0)
+    assert bank.matches(1, ["blue"], ["red"], 0.99) is False
+
+
+def test_exclude_alone_still_uses_an_absolute_bar(bank):
+    frame, dets = frame_and_dets("red")
+    bank.update(frame, dets, now=0.0)
+    assert bank.matches(1, [], ["red"], 0.6) is False
+    assert bank.matches(1, [], ["blue"], 0.6) is True
+
+
+def test_competing_phrases_through_the_pipeline(rig):
+    """Two objects, one word apart, decided by which phrase wins."""
+    rig.paint("red", "blue")
+    reds = rig.add(detect=("thing",), include=["red"], exclude=["blue"])
+    rig.settle()
+    rig.frames(6, seen=boxes(LEFT, RIGHT))
+    assert rig.view(reds).matches == 1

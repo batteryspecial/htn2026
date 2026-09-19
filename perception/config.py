@@ -51,6 +51,12 @@ class Config:
 
     # 4. Stages
     VERIFY_TTL_S: float = _f("VERIFY_TTL_S", 1.0)  # re-verify a track this often
+    # Score clothing on the upper body rather than the whole box.
+    ATTR_TIGHTEN: bool = _env("ATTR_TIGHTEN", "1") == "1"
+    # Drop detections smaller than this fraction of the frame. Open-vocabulary
+    # detectors invent small boxes on texture, and a junk box sails through any
+    # exclusion and inflates the count.
+    MIN_BOX_FRAC: float = _f("MIN_BOX_FRAC", 0.0015)
     VERIFY_BATCH: int = _i("VERIFY_BATCH", 16)
     RELATE_LOWER_FRAC: float = _f("RELATE_LOWER_FRAC", 0.4)
     LOCK_SIM_THRESHOLD: float = _f("LOCK_SIM_THRESHOLD", 0.8)

@@ -279,14 +279,20 @@ def test_events_reach_the_channel(client):
     assert first["type"] and "id" in first and "notify" in first
 
 
-def test_a_stalled_client_makes_the_pipeline_drop_not_block(client):
+def test_a_stalled_client_does_not_stall_the_pipeline(client):
+    """A client that stops reading must not hold up the frame loop.
+
+    The drop policy itself is pinned deterministically at the bus level in
+    test_runtime; what matters here is that the socket survives a burst and
+    the pipeline kept going while nobody was listening.
+    """
     client.post("/behaviors", json=spec())
     client.rig.settle()
     with client.websocket_connect("/ws/state") as ws:
+        before = client.rig.loop.timings.frames
         for _ in range(40):
             client.rig.frames(2, seen=boxes(THING))
-        time.sleep(0.2)
-        assert client.rig.state_bus.dropped > 0
+        assert client.rig.loop.timings.frames - before == 80
         assert json.loads(ws.receive_text())["ts"]
 
 

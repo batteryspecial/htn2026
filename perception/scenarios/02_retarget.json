@@ -1,18 +1,18 @@
 {
-  "name": "instant retarget and model swap",
+  "name": "retarget and model swap",
   "clip": "clips/real.mp4",
   "model": "yoloe",
   "duration_s": 22,
   "steps": [
-    {"at": 1.0,  "add": {"behavior_id": "a", "kind": "track", "label": "the bus",
-                         "subject": {"detect": ["bus"]}}},
-    {"at": 8.0,  "add": {"behavior_id": "b", "kind": "track", "label": "a person",
-                         "subject": {"detect": ["person"]}}},
-    {"at": 12.0, "remove": "a"},
+    {"at": 1.0,  "add": {"kind": "track", "render": {"label": "the bus"},
+                         "subject": {"detect": ["bus"], "pick": "ref"}}},
+    {"at": 8.0,  "add": {"kind": "track", "render": {"label": "a person"},
+                         "subject": {"detect": ["person"], "pick": "ref"}}},
+    {"at": 12.0, "remove": "b1"},
     {"at": 16.0, "model": "coco"}
   ],
   "expect": {
-    "a": {"reaches": "active", "acquire_under_ms": 2000},
-    "b": {"reaches": "active", "acquire_under_ms": 2000}
+    "b1": {"reaches": "TRACKING", "acquire_under_ms": 2000},
+    "b2": {"reaches": "TRACKING", "acquire_under_ms": 2000, "events": ["acquired"]}
   }
 }

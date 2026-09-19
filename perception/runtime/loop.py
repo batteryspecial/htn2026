@@ -89,6 +89,9 @@ class InferenceLoop:
         self.view = View()
         self.timings = Timings()
         self.last_state: StateView | None = None
+        #: Raw tracked detections from the last frame. The published state is
+        #: normalized; review tools need the pixels.
+        self.last_tracks: sv.Detections | None = None
         self.hud_text: str | None = None
         self._last_seq = -1
         self._last_publish = 0.0
@@ -158,6 +161,7 @@ class InferenceLoop:
         if seq == self._last_seq:
             return None  # the source is slower than we are
         self._last_seq = seq
+        self.shared.frame_area = frame.shape[0] * frame.shape[1]
         self.timings.tick(now)
 
         active = [b for b in self.behaviors.values() if b.state != "PAUSED"]
@@ -165,6 +169,7 @@ class InferenceLoop:
         if tracks is None:
             return self._publish(self._state(now, []), frame, [])
 
+        self.last_tracks = tracks
         t0 = time.perf_counter()
         self.shared.bank.update(frame, tracks, now)
         self.timings.mark("attrs", time.perf_counter() - t0)
@@ -185,7 +190,7 @@ class InferenceLoop:
         ctx = Frame(image=frame, tracks=tracks, bank=self.shared.bank, now=now,
                     shape=frame.shape[:2], trails=self.shared.paths())
         layers: list[Layer] = []
-        motor = None
+        motor, motor_started = None, -1.0
         for b in active:
             try:
                 outcome: Outcome = b.step(ctx)
@@ -197,9 +202,10 @@ class InferenceLoop:
             layers.extend(outcome.layers)
             for ev in outcome.events:
                 self.event_bus.publish(ev)
-            # The most recently started track or pan_to drives the view.
-            if outcome.motor is not None:
-                motor = outcome.motor
+            # Only the most recently started behaviour steers, so starting a
+            # new "follow that" takes the arrows over from the old one.
+            if outcome.motor is not None and b.started > motor_started:
+                motor, motor_started = outcome.motor, b.started
         return layers, motor
 
     def _detect_and_track(self, frame: np.ndarray, now: float) -> sv.Detections | None:

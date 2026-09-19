@@ -170,3 +170,7 @@ class Rig:
 
     def types(self):
         return [e.type for e in self.events]
+
+    def state_of_track_lost(self) -> bool:
+        s = self.last
+        return bool(s) and any(b.state in ("LOST", "SEARCHING") for b in s.behaviors)

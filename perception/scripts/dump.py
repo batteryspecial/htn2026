@@ -56,17 +56,24 @@ class Dumper:
         `claimed_by` is the point: it shows which behaviour accepted the track,
         so an exclusion that kept the wrong person is visible at a glance.
         """
-        tracks = view.tracks
+        # The loop publishes normalized tracks in its state; the raw
+        # detections needed for crops live on the shared tracker.
+        tracks = getattr(view, "detections", None) or self._raw(loop)
         if tracks is None or len(tracks) == 0 or view.frame is None:
             return
         bank = loop.shared.bank
-        crops = crops_from(view.frame, tracks)
+        crops = crops_from(view.frame, tracks, tighten=bank.tighten)
         ids = tracks.tracker_id
         names = tracks.data.get("class_name")
         claims: dict[int, list[str]] = {}
-        for bid, outcome in view.outcomes.items():
-            for i in outcome.matches:
-                claims.setdefault(int(i), []).append(bid)
+        state = view.state
+        if state is not None:
+            by_track = {t: b.label or b.id
+                        for b in state.behaviors for t in b.track_ids}
+            for i in range(len(tracks)):
+                tid = int(ids[i]) if ids is not None else -1
+                if tid in by_track:
+                    claims.setdefault(i, []).append(by_track[tid])
 
         for i, crop in enumerate(crops):
             if crop.size == 0:
@@ -84,6 +91,11 @@ class Dumper:
                 "claimed_by": ",".join(claims.get(i, [])) or "-",
                 "scores": {k: round(v, 3) for k, v in scores.items()},
             })
+
+    @staticmethod
+    def _raw(loop):
+        """Last tracked detections, kept by the loop for exactly this."""
+        return getattr(loop, "last_tracks", None)
 
     @staticmethod
     def _thumb(crop: np.ndarray, height: int = 180) -> np.ndarray:

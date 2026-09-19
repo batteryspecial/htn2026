@@ -28,7 +28,7 @@ import cv2
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import CFG, setup_logging  # noqa: E402
-from contracts import Behavior  # noqa: E402
+from contracts import BehaviorSpec  # noqa: E402
 from detectors.registry import Registry  # noqa: E402
 from runtime.workers import Builder  # noqa: E402
 from runtime.capture import Capture  # noqa: E402
@@ -76,8 +76,7 @@ class Run:
 
         ev, st = make_buses()
         ev.subscribe_callback(self._on_event)
-        self.machine = Machine(emit=ev.publish)
-        self.machine.on_registry_ready()
+        self.health = Health(emit=ev.publish)
 
         clip = self.s["clip"]
         if not Path(clip).exists():
@@ -87,7 +86,9 @@ class Run:
                                encoder=encoder).start()
         shared = Shared()
         shared.bank.encoder = encoder
-        self.loop = InferenceLoop(self.capture, self.builder, self.machine, st, ev, shared)
+        from actuator.virtual import VirtualMotor
+        self.loop = InferenceLoop(self.capture, self.builder, self.health, st, ev,
+                                  shared, actuator=VirtualMotor())
         self.streamer = Streamer(self.loop) if (self.record or self.dumper) else None
 
     @property
@@ -98,7 +99,7 @@ class Run:
 
     def _on_event(self, ev) -> None:
         self.events.append(ev)
-        if hasattr(ev, "kind"):
+        if getattr(ev, "type", None):
             self.fired.append(ev)
 
     # 2. Execution ------------------------------------------------------
@@ -136,33 +137,33 @@ class Run:
 
     def _apply(self, step: dict, elapsed: float) -> None:
         if "add" in step:
-            b = Behavior(**step["add"])
-            self.asked_at[b.behavior_id] = time.time()
-            self.builder.add_behavior(f"clip-{b.behavior_id}", b)
-            print(f"  [{elapsed:5.1f}s] start {b.behavior_id} "
+            b = BehaviorSpec(**step["add"])
+            bid = self.builder.add_behavior(b)
+            self.asked_at[bid] = time.time()
+            print(f"  [{elapsed:5.1f}s] start {bid} "
                   f"({b.kind}: {'+'.join(b.subject.detect)}"
                   f"{' include=' + str(b.subject.include) if b.subject.include else ''}"
                   f"{' exclude=' + str(b.subject.exclude) if b.subject.exclude else ''})")
         elif "remove" in step:
-            self.builder.remove_behavior("clip", step["remove"])
+            self.builder.remove_behavior(step["remove"])
             print(f"  [{elapsed:5.1f}s] stop  {step['remove']}")
         elif "model" in step:
-            self.builder.set_model("clip", step["model"])
+            self.builder.set_model(step["model"])
             print(f"  [{elapsed:5.1f}s] model -> {step['model']}")
 
     def _observe(self) -> None:
         """Record the best each behaviour ever managed, not just the last frame."""
-        summary = self.loop.last_summary
+        summary = self.loop.last_state
         if not summary:
             return
         for b in summary.behaviors:
-            row = self.seen.setdefault(b.behavior_id, {
+            row = self.seen.setdefault(b.id, {
                 "kind": b.kind, "states": set(), "max_matches": 0, "frames": 0})
             row["states"].add(b.state)
             row["max_matches"] = max(row["max_matches"], b.matches)
             row["frames"] += 1
-            if b.state == "active" and b.behavior_id not in self.applied_at:
-                self.applied_at[b.behavior_id] = time.time()
+            if b.state in ("ACTIVE", "TRACKING") and b.id not in self.applied_at:
+                self.applied_at[b.id] = time.time()
 
     def _maybe_write(self, writer):
         if not self.streamer or not self.record:
@@ -193,10 +194,10 @@ class Run:
             print(f"  {bid:12} {row['kind']:10} states={sorted(row['states'])} "
                   f"max_matches={row['max_matches']} acquired_in={latency}")
         if self.fired:
-            kinds = {}
+            counts = {}
             for e in self.fired:
-                kinds[e.kind] = kinds.get(e.kind, 0) + 1
-            print(f"  events: {kinds}")
+                counts[e.type] = counts.get(e.type, 0) + 1
+            print(f"  events: {counts}")
 
         if self.dumper:
             where = self.dumper.finish({
@@ -206,7 +207,7 @@ class Run:
                 "behaviors": {b: {"states": sorted(r["states"]),
                                   "max_matches": r["max_matches"]}
                               for b, r in self.seen.items()},
-                "events": [e.kind for e in self.fired],
+                "events": [e.type for e in self.fired],
             })
             print(f"  dumped for review: {where}/index.html")
 
@@ -247,7 +248,7 @@ class Run:
             yield (f"acquired within {want['acquire_under_ms']} ms", got,
                    f" ({ms:.0f} ms)" if have else " (never acquired)")
         if "events" in want:
-            fired = {e.kind for e in self.fired if e.behavior_id == bid}
+            fired = {e.type for e in self.fired if e.behavior_id == bid}
             for kind in want["events"]:
                 yield f"fired {kind!r}", kind in fired, f" (fired {sorted(fired)})"
 

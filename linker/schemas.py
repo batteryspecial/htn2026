@@ -69,8 +69,12 @@ class Selector(BaseModel):
     ref_id: str | None = None
     relate: Relate | None = None
     pick: Pick = "all"
-    #: Contrastive pass mark for include/exclude.
-    min_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    #: Contrastive pass mark for include/exclude. Measured on real footage:
+    #: at 0.6 a man in a cream coat scored 0.705 for "wearing a dark jacket"
+    #: and was wrongly excluded, while the actual dark jackets scored 0.99.
+    #: The ranking was right and the bar was too low. Tune per clip with
+    #: scripts/calibrate.py; this default errs toward matching too little.
+    min_score: float = Field(default=0.75, ge=0.0, le=1.0)
     #: Cosine a crop must reach to match the reference.
     ref_min_sim: float = Field(default=0.75, ge=0.0, le=1.0)
 

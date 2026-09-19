@@ -111,6 +111,9 @@ class Behavior:
         #: against the clock the loop is running on.
         self.now = time.time()
         self.since = self.now
+        #: When this behaviour was started. The most recent track or pan_to
+        #: owns the actuator, so a new "follow that" takes over the arrows.
+        self.started = self.now
         self.detail: str | None = None
         self.data: dict[str, Any] = {}
         self._paused_from: BehaviorState | None = None

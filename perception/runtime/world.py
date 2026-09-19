@@ -24,6 +24,7 @@ import supervision as sv
 from supervision.tracker.byte_tracker.core import ByteTrack
 
 from attributes.clip_cache import AttributeBank
+from config import CFG
 from behaviors.base import Behavior
 from detectors.base import Detector
 
@@ -100,6 +101,9 @@ class Shared:
     bank: AttributeBank = field(default_factory=AttributeBank)
     trails: dict[int, deque] = field(default_factory=lambda: defaultdict(
         lambda: deque(maxlen=TRAIL_LEN)))
+    #: Set by the loop from the real frame, so the size floor is a fraction of
+    #: the frame rather than a pixel count tied to one camera.
+    frame_area: int = 640 * 480
 
     def reset(self, why: str) -> None:
         log.info("resetting tracker, attributes and trails: %s", why)
@@ -108,9 +112,21 @@ class Shared:
         self.trails.clear()
 
     def track(self, dets: sv.Detections) -> sv.Detections:
-        out = self.tracker.update_with_detections(dets)
+        out = self.tracker.update_with_detections(self._winnow(dets))
         self._trails(out)
         return out
+
+    def _winnow(self, dets: sv.Detections) -> sv.Detections:
+        """Drop detections too small to be anything.
+
+        Open-vocabulary detectors produce boxes on texture. On real footage
+        three of four "people without dark jackets" were a patterned wall, and
+        a junk box passes every exclusion by definition.
+        """
+        if len(dets) == 0 or CFG.MIN_BOX_FRAC <= 0:
+            return dets
+        keep = dets.box_area >= CFG.MIN_BOX_FRAC * self.frame_area
+        return dets[keep] if not keep.all() else dets
 
     def _trails(self, dets: sv.Detections) -> None:
         ids = dets.tracker_id
