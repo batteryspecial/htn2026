@@ -134,8 +134,14 @@ class Detector(ABC):
 
     # 3. Per-frame -----------------------------------------------------
     @abstractmethod
-    def infer(self, frame: np.ndarray) -> sv.Detections:
-        """Loop thread. Always returns Detections carrying `class_name`."""
+    def infer(self, frame: np.ndarray, conf: float | None = None) -> sv.Detections:
+        """Always returns Detections carrying `class_name`.
+
+        `conf` overrides the configured threshold for one call. A scene sweep
+        asks about forty classes at once and needs a higher bar than tracking
+        does; passing it here keeps that local instead of mutating global
+        config from whichever thread happens to be sweeping.
+        """
 
     # 4. Introspection -------------------------------------------------
     def describe(self) -> dict[str, Any]:

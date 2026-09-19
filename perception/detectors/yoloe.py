@@ -102,11 +102,11 @@ class YoloeDetector(Detector):
         self._model.set_classes(prepared.names, prepared.text_pe)
         self._active = list(prepared.names)
 
-    def infer(self, frame: np.ndarray) -> sv.Detections:
+    def infer(self, frame: np.ndarray, conf: float | None = None) -> sv.Detections:
         result = self._model.predict(
             frame,
             imgsz=CFG.IMGSZ,
-            conf=CFG.CONF_THRESHOLD,
+            conf=CFG.CONF_THRESHOLD if conf is None else conf,
             quantize=quantize(),
             verbose=False,
         )[0]

@@ -51,17 +51,30 @@ Hack the North 2026, ~22 hours left. Pitch: **one camera, many devices.** An age
 
 Target: 25–30 fps at 720p input, 640 px detector size on the 4070.
 
-## Models (`models.yaml`, preload all available at boot)
+## The model zoo (`models.yaml`, `zoo/`)
 
-| Name | Role | Notes |
+One registry, entries typed by **role**. Exactly one model per role is active,
+so swapping the pose model is the same operation as swapping the detector.
+`role` is what a model is for; `type` is how it is built, and `zoo/roles.py`
+maps each type to its role and constructor. **Adding a model is an entry in
+`models.yaml` plus, at most, a class in the folder its role belongs to** — a
+second pose model is five lines of YAML.
+
+| Role | Models | Notes |
 |---|---|---|
-| `yoloe` | Default detector, open vocab, masks | `YOLOE("yoloe-11s-seg.pt")`; `set_classes(names, get_text_pe(names))` in the loop, only when the prompt union changes |
-| `rfdetr` | Fixed-vocab detector (COCO) — demo #16 | `rfdetr` package, e.g. `RFDETRBase()`; `predict()` takes RGB (convert from BGR) and returns `sv.Detections`; map class IDs through the package's COCO class table (verify the indexing) |
-| `pose` | Aux model for `pose_trigger` — demo #11 | `yolo11n-pose.pt`; runs only while a pose behavior is active |
-| `clip` | Attributes + reference embeddings | open_clip ViT-B-32; DINOv2 is the upgrade if reference matching is weak |
-| `ocr` | Aux model for the keyboard skill — demo #17 | EasyOCR, English, letter allowlist; worker thread only |
+| `detector` | `yoloe` (default, open vocab, masks), `coco`, `coco_trt`, `fake`, `scene` | YOLOE: `set_classes(names, get_text_pe(names))` in the loop, only when the prompt union changes. `scene` is `sweep: true`, reserved for `/describe` |
+| `embedder` | `clip` (open_clip ViT-B-32) | Attributes, reference matching, re-identification. DINOv2 is the upgrade if reference matching is weak |
+| `pose` | `pose` (`yolo11n-pose.pt`) — demo #11 | Loaded only while a gesture behavior is active |
+| `ocr` | — (EasyOCR, English, letter allowlist) — demo #17 | Worker thread only; not built |
 
-**Model switch** (`POST /model`): flip at a frame boundary (preloaded). Then re-validate every behavior. A behavior whose labels are missing from the new vocab goes `PAUSED` with a reason and resumes automatically when a compatible model returns. Emit `model_switched` with the new model and fps, and show the model name in the HUD.
+Anything that cannot run here — no CUDA, no weights, package not installed,
+type in the wrong role — reports `available: false` with a reason and the
+process still boots. A role with nothing available is answerable without
+raising (`has_role`), because behaviours ask every frame.
+
+**Model switch** (`POST /model {name}`): the role is inferred from the model. A detector swap flips at a frame boundary and resets tracking; aux roles swap in place. Then re-validate every behavior: one whose labels are missing from the new vocab, **or whose required role is unfilled**, goes `PAUSED` with a reason and resumes automatically. Emit `model_switched`, and show the model name in the HUD.
+
+**The active detector is not static.** Anything needing a detector other than the live one — the `/describe` sweep — must resolve it per request via `registry.sweep_detector()`, never by name, and must never re-point the live one.
 
 ## Specs
 
@@ -98,8 +111,8 @@ Target: 25–30 fps at 720p input, 640 px detector size on the 4070.
 | `watch` ✅ | `triggers[]`, `cooldown_s: 5` | ARMING (subject stable 1 s, baseline learned) → ARMED → FIRED → COOLDOWN → ARMED; PAUSED | `armed`, `missing`, `moved`, `near`, `appeared` | 3, 9, 10 |
 | `count_line` ✅ | `line: [[x1,y1],[x2,y2]]` normalized (default vertical center) | ACTIVE | `crossed` (in/out counts) | 13 |
 | `privacy` ✅ | `keep_ref`, `mode: blur\|pixelate` | ACTIVE | — | 12 |
-| `pan_to` ⏳ | `deg`, `hfov_deg: 70` | GUIDING → REACHED | `reached` | 4 |
-| `pose_trigger` ⏳ needs pose model | `gesture: hand_raised` | ACTIVE | `hand_raised` | 11 |
+| `pan_to` ✅ | `deg`, `hfov_deg: 70`, `tolerance_deg: 5` | GUIDING → REACHED | `reached` | 4 |
+| `pose_trigger` ✅ | `gesture: hand_raised`, `cooldown_s`, `hold_frames` | ACTIVE, PAUSED | `hand_raised` | 11 |
 | `keyboard` ⏳ needs OCR model | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
 
 Triggers for `watch`:
@@ -129,6 +142,24 @@ Grayscale, downscale to 320 px, `cv2.phaseCorrelate` (or median LK optical flow)
 - **Render:** a numbered badge on each key in typing order. Repeated keys list all their numbers (h → `1·7·14`, space → `␣ 5·9`). Draw a path line through the keys in order; in `auto` or `manual` mode, highlight the current step (`POST /behaviors/{id}/advance` for manual).
 - `keyboard_lost` if no successful fit in 2 s.
 
+## `describe()` (#14)
+
+"What's on the table" names no subject, and an open-vocabulary detector only
+finds what it is named. `POST /describe` supplies the missing words: a **sweep**
+over a broad everyday vocabulary (`scene.SCENE_VOCAB`, phrased per
+`../SELECTORS.md`) at a higher confidence than tracking, plus **spatial
+language** so the answer and the overlay agree. Returns objects, a one-sentence
+`summary` that answers simple questions with no model at all, and a `prompt`
+carrying the grounding.
+
+The sweep runs on a **spare** detector resolved per request — never the active
+one, never by hardcoded name, and always open-vocabulary. With no spare it
+refuses and reports tracked objects only, rather than disturbing the live one.
+
+**Perception never calls a language model.** It returns the frame, what it can
+see, and a prompt; the agent supplies the model. There is a test asserting no
+LLM plumbing appears in `server/api.py`.
+
 ## Renderer layers (in draw order)
 
 privacy blur → masks → boxes + labels + track IDs → trails → zones/lines → keyboard badges/path → guidance arrows → alert flash border (1 s on trigger) → HUD (model, fps, HUD text, behavior chips with state).
@@ -148,6 +179,7 @@ Colors come from the behavior's `render.color` or a fixed palette by behavior in
 | POST | `/references` | multipart image, or `{from: "largest_person"}` → `{ref_id, thumb_url}` |
 | POST | `/query/count` | `{selector, window_s: 1}` → median count |
 | POST | `/query/look` | `{selector?}` → detections with labels, attributes, positions |
+| POST | `/describe` | `{question, candidates?, sweep?}` → objects, summary, vision-model prompt |
 | GET | `/snapshot` | current raw JPEG (for the orchestrator's vision model) |
 | GET | `/snapshots/{id}.jpg` | event crops |
 | POST | `/hud` | `{text}` shown in the HUD |
@@ -169,16 +201,18 @@ System events use `behavior_id: null`: `model_switched`, `camera_lost`, `camera_
 
 ```
 perception/
-  main.py  config.py  models.yaml  contracts.py
-  runtime/    capture.py loop.py ops.py workers.py events.py
-  detectors/  base.py yoloe.py rfdetr.py
-  attributes/ clip_cache.py references.py
-  behaviors/  base.py highlight.py track.py watch.py count_line.py privacy.py pan_to.py pose_trigger.py
-  skills/     keyboard.py pose.py
-  actuator/   base.py virtual.py
+  main.py  config.py  models.yaml  contracts.py  scene.py
+  zoo/        roles.py registry.py          <- what models exist, and their roles
+  runtime/    capture.py loop.py ops.py workers.py events.py world.py health.py
+  detectors/  base.py yoloe.py ultralytics_fixed.py fake.py
+  attributes/ clip_cache.py encoders.py references.py
+  behaviors/  base.py kinds.py picking.py highlight.py track.py watch.py
+              count_line.py privacy.py pan_to.py pose_trigger.py
+  skills/     pose.py  (keyboard.py)
+  actuator/   base.py virtual.py odometry.py
   render/     layers.py hud.py
-  server/     api.py stream.py
-  clips/  (gitignored)   tests/
+  server/     api.py stream.py legacy.py
+  clips/  (gitignored)   scenarios/  scripts/  tests/
 ```
 
 ## Dependencies
@@ -187,15 +221,17 @@ perception/
 
 ## Build state
 
-Built and proven on recorded clips: the frame loop, capture, YOLOE, ByteTrack,
-the declarative renderer, `/video`, the ops queue, `/behaviors`, events, CLIP
-attributes with include/exclude, `relate`, references, the virtual motor and
-guidance arrows, and the `highlight` `track` `watch` `count_line` `privacy`
-behaviours. 248 tests, no weights or GPU needed.
+**354 tests, no weights or GPU needed.** Built: the frame loop, capture, YOLOE,
+ByteTrack, the declarative renderer, `/video`, the ops queue, `/behaviors`,
+events, CLIP attributes with include/exclude, `relate`, references, the model
+zoo, the virtual motor and guidance arrows, `pan_to` odometry, `describe()`,
+and seven of the eight behaviour kinds.
 
-Outstanding, all of it blocked on *adding a model* rather than on pipeline
-work: `pose_trigger` (pose), `keyboard` (OCR), `rfdetr` (detector), and
-`pan_to` (optical-flow odometry, no model). See the model zoo plan.
+Proven on recorded clips: `highlight`, `track` (including LOST → arrow held →
+reacquired by appearance), `watch`, `count_line`, retarget, multi-target.
+
+Outstanding: `keyboard` (needs OCR), `rfdetr` (a detector class), and real-clip
+runs for the kinds only unit-tested so far.
 
 ## Build order (original)
 

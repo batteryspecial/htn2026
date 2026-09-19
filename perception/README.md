@@ -54,13 +54,58 @@ one never disturbs the others. The server assigns the id.
 | `watch` | ARMING → ARMED → FIRED → COOLDOWN | `armed` `missing` `moved` `near` `appeared` | ✅ |
 | `count_line` | ACTIVE | `crossed` | ✅ |
 | `privacy` | ACTIVE | — | ✅ |
-| `pan_to` | GUIDING → REACHED | `reached` | needs odometry |
-| `pose_trigger` | ACTIVE | `hand_raised` | needs a pose model |
+| `pan_to` | GUIDING → REACHED | `reached` | ✅ |
+| `pose_trigger` | ACTIVE | `hand_raised` | ✅ |
 | `keyboard` | SEARCHING ⇄ LOCKED | `keyboard_locked` `step` | needs an OCR model |
 
-`watch` takes `triggers` and a `cooldown_s`; `count_line` takes a normalized
-`line`; `privacy` takes `keep_ref` and `mode`. Malformed params are refused
+Params per kind: `watch` takes `triggers` and `cooldown_s`; `count_line` a
+normalized `line`; `privacy` `keep_ref` and `mode`; `pan_to` `deg` and
+`hfov_deg`; `pose_trigger` a `gesture`. Malformed params are refused
 synchronously with a reason, not accepted and failed later.
+
+Any kind can also be `PAUSED`, for one of two reasons: the active detector has
+no word for its subject, or a model role it needs is unfilled. Either way it is
+held with a readable reason and resumes by itself.
+
+## The model zoo
+
+Every model lives in one registry, typed by **role**. Exactly one model per
+role is active, so swapping the pose model is the same operation as swapping
+the detector.
+
+| role | what it does | without it |
+|---|---|---|
+| `detector` | finds and names things; the loop's main cost | nothing works |
+| `embedder` | crops and phrases to vectors: attributes, references, re-ID | attribute checks never match |
+| `pose` | body keypoints | `pose_trigger` is PAUSED |
+| `ocr` | reads text in frame | `keyboard` is PAUSED |
+
+Adding a model is an entry in `models.yaml` plus, at most, a class in the
+folder its role belongs to. A second pose model is five lines of YAML and
+nothing else. Anything that cannot run here — no CUDA, no weights, package not
+installed — reports `available: false` with a reason and the service still
+boots, which is why the laptop and the GPU host can both run this.
+
+## describe()
+
+"What's on the table right now?" is a different shape from every other query:
+it names no subject, and an open-vocabulary detector only finds what you name
+it. `POST /describe` closes that gap with two things, neither of which is a
+language model.
+
+A **sweep** asks a *spare* detector about a broad everyday vocabulary in one
+pass, turning "what is there" into "which of these is there". It never uses the
+live detector: re-pointing the one the camera is tracking with would break
+every running behaviour for the sake of a question, and the active model
+changes under us anyway, so the spare is chosen per request.
+
+**Spatial language** turns geometry into words — *"a laptop, left, large"*
+rather than `cx=-0.28, area=0.19` — so the spoken answer and the overlay agree
+about the scene.
+
+It returns the objects, a one-sentence `summary` that answers simple questions
+with no model at all, and a `prompt` carrying the grounding for the agent's
+vision model. **Perception never calls an LLM**; that boundary has a test.
 
 Unbuilt kinds are registered and refuse with a message naming what they need,
 so the orchestrator can be written against the whole contract today. Any kind
@@ -77,6 +122,7 @@ with a reason and resumes by itself when a capable model returns.
 | `POST /references` · `GET /references` · `GET /references/{id}.jpg` | register an appearance from an upload or from the frame |
 | `GET /health` · `GET /state` · `POST /hud` | status; full frame state; on-screen instruction |
 | `POST /query/count` · `POST /query/look` | median count over a window; what is visible now |
+| `POST /describe` | sweep the scene and hand back grounding plus a vision-model prompt |
 | `GET /video` · `GET /frame.jpg` · `GET /snapshot` | enriched MJPEG; one enriched frame; one **raw** frame |
 | `GET /snapshots/{event_id}.jpg` | the crop an event fired on |
 | `WS /ws/state` · `WS /ws/events` | per-frame state; things that happened |
@@ -105,7 +151,7 @@ behaviours. The operator UI belongs to the orchestrator.
 ## Testing against real clips
 
 ```bash
-pytest                                        # 248 tests, no weights or GPU needed
+pytest                                        # 354 tests, no weights or GPU needed
 python scripts/clip_test.py scenarios/*.json --dump out/ --record footage/
 python scripts/calibrate.py clips/duck.mp4 "a yellow duck" "a brown duck" --detect duck
 python scripts/validate_spec.py plan.json     # would perception accept the agent's output?
@@ -142,6 +188,12 @@ gave, because a passing assertion is not the same as a correct answer.
 - **Re-identification needs appearance.** Leaving LOST requires the *same*
   instance, not another object of the same class, or a passerby cancels the
   guidance arrow and the demo looks broken.
+- **`cv2.phaseCorrelate` mutates its inputs** when given a window argument.
+  Keeping a reference frame and passing it in every call re-windows it each
+  time, which manufactured 3.4° of drift from a completely stationary camera.
+- **A behaviour's clock must be the loop's clock.** They are built on the
+  worker against wall time and first run against an injected one, so every
+  duration-based transition is wrong until they rebase.
 
 ## Config
 
