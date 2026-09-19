@@ -359,21 +359,12 @@
     'partial objective beats no objective.',
     'With two targets set arbitration.alternate_s to 3.0; otherwise arbitration is null.',
     '',
-    'detect: 1 to 6 short open-vocabulary prompts for YOLOE. Plain singular nouns',
-    '("person", "dog", "pencil", "bottle"). Never slang or pronouns — "guy", "dude",',
-    '"whoever", "it" all become "person" or the right concrete noun. Every human is',
-    '"person": never "woman", "man", "lady", "kid", "guy". No colours or adjectives —',
-    'detection is class-level only, attributes belong in verify.',
-    'List only the target\'s own class plus any noun named in relate. Clothing, colours',
-    'and held items that are not the relate noun stay out of detect and live in the',
-    'verify text instead.',
+    '__DETECT_RULE__',
+    'List only the target\'s own class plus any noun named in relate. Held items that',
+    'are not the relate noun stay out of detect.',
     'detect is never empty, even when select is "locked": name the class being tracked.',
     '',
-    'verify: a CLIP check, used when the operator gave an attribute detection cannot',
-    'express (colour, pattern, writing). class is the detect noun it refines, text is the',
-    'full natural description, min_score 0.6. null when the instruction has no attribute.',
-    'The pipeline scores softmax over [verify.text, "a {class}"], so text should read as a',
-    'natural description of the thing, not a keyword list.',
+    '__VERIFY_RULE__',
     '',
     'relate: use when the target is defined by another object on or near it, e.g.',
     '"the person holding the blue bottle". keep is the noun to keep, if_contains is the',
@@ -394,6 +385,61 @@
     '  relate {keep "person", if_contains "bottle"},',
     '  verify {class "person", text "person holding the blue bottle", min_score 0.6}.'
   ].join('\n');
+
+  /* The right wording for `detect` depends on the detector, and getting this
+     wrong is silent: the pipeline reports no_target and looks broken.
+
+     Measured on a rubber duck with yoloe-11s: "duck" 0.00, "rubber duck" 0.00,
+     "yellow duck" 0.22. An open-vocabulary detector matches text against the
+     image, so the adjective is doing real work and stripping it loses the
+     object entirely. A fixed-vocabulary detector has the opposite constraint —
+     anything outside its class list is rejected outright by validate_vocab. */
+  var DETECT_RULE_OPEN_VOCAB = [
+    'detect: 1 to 6 prompts for an OPEN-VOCABULARY detector, which matches text against',
+    'the image. Keep the operator\'s whole noun phrase — "yellow duck", "red mug",',
+    '"person\'s face", "blue backpack". NEVER shorten it to the bare noun: measured on',
+    'this detector, "yellow duck" scores 0.22 and "duck" scores 0.00; "person\'s face"',
+    'scores 0.48 and "face" scores 0.00. The adjectives and possessives are doing the',
+    'work. This is the opposite of the rule for verify.class below, which must be bare.',
+    'Short phrases only, no sentences. Slang and pronouns still resolve to something',
+    'concrete: "guy" and "whoever" become "person".'
+  ].join('\n');
+
+  var DETECT_RULE_FIXED_VOCAB = [
+    'detect: 1 to 6 class names for a FIXED-VOCABULARY detector. Only canonical COCO',
+    'class names work — anything else is rejected before a frame is read. Plain singular',
+    'nouns: "person", "dog", "bottle", "cup", "backpack". Every human is "person", never',
+    '"woman", "man", "lady", "guy". No colours or adjectives: they are not class names,',
+    'so they belong in verify instead.'
+  ].join('\n');
+
+  /* verify only earns its place when detect cannot already express the
+     attribute. With an open-vocabulary detector it always can, so a verify is
+     a second, weaker copy of a test the detector just passed — and the
+     pipeline contrasts it against "a {class}", which for a descriptive class
+     is a coin flip that discards real detections. */
+  var VERIFY_RULE_OPEN_VOCAB = [
+    'verify: null. Always. The detector already has the full description in detect, so a',
+    'second check adds nothing and can only lose the target. The one exception is an',
+    'attribute no detector prompt could carry, such as text written on the object; even',
+    'then, prefer null.'
+  ].join('\n');
+
+  var VERIFY_RULE_FIXED_VOCAB = [
+    'verify: how an attribute gets expressed at all, since detect is limited to bare class',
+    'names. class is the detect class it refines ("mug"), text is the full description',
+    '("a red mug"), min_score 0.6. The pipeline scores CLIP softmax over',
+    '[verify.text, "a {class}"], so the two must describe different things — if the',
+    'description reduces to the class name there is nothing to contrast, and verify must',
+    'be null. No attribute in the instruction means null.'
+  ].join('\n');
+
+  function systemPrompt(openVocab) {
+    var fixed = openVocab === false;
+    return SYSTEM_PROMPT
+      .replace('__DETECT_RULE__', fixed ? DETECT_RULE_FIXED_VOCAB : DETECT_RULE_OPEN_VOCAB)
+      .replace('__VERIFY_RULE__', fixed ? VERIFY_RULE_FIXED_VOCAB : VERIFY_RULE_OPEN_VOCAB);
+  }
 
   function newSpecId() {
     return 'spec_' + Date.now().toString(36).slice(-6);
@@ -421,12 +467,38 @@
     } catch (e) { /* private mode, fall back to retrying each load */ }
   }
 
+  /* "a Yellow Duck" and "yellow duck" are the same words to CLIP. */
+  function bareWords(s) {
+    return String(s || '').toLowerCase()
+      .replace(/^(a|an|the)\s+/, '')
+      .replace(/[^a-z0-9 ]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   /* strict mode makes every field required, so optionals come back as null */
   function dropNulls(spec) {
     if (spec.arbitration === null) delete spec.arbitration;
     (spec.targets || []).forEach(function (t) {
       if (t.verify === null) delete t.verify;
       if (t.relate === null) delete t.relate;
+
+      // The pipeline contrasts verify.text against "a {class}". If those are
+      // the same words the softmax is 0.5 by construction, which is under any
+      // sane min_score, so every detection is silently discarded. A verify
+      // that can never pass is worse than no verify at all.
+      if (t.verify && bareWords(t.verify.text) === bareWords(t.verify['class'])) {
+        delete t.verify;
+      }
+
+      // Likewise if detect already carries the same description: the detector
+      // has just filtered on it, so verify re-runs a weaker version of a test
+      // that already passed.
+      if (t.verify && (t.detect || []).some(function (d) {
+        return bareWords(d) === bareWords(t.verify.text);
+      })) {
+        delete t.verify;
+      }
     });
     // The model drops arbitration on two-target specs about half the time even
     // though the prompt asks for it. The pipeline defaults it to 3.0 anyway, so
@@ -460,7 +532,7 @@
       var body = {
         model: s.openaiModel,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt(s.specModelOpenVocab) },
           { role: 'user', content: text }
         ],
         response_format: {

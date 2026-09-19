@@ -105,6 +105,12 @@
   function refreshModels() {
     pipeline.models().then(function (list) {
       knownModels = list.map(function (m) { return m.name; }).filter(Boolean);
+
+      // The compile prompt words `detect` differently for an open-vocabulary
+      // detector than a fixed one, so it has to know which is selected.
+      var chosen = list.filter(function (m) { return m.name === settings.specModel; })[0];
+      settings.specModelOpenVocab = chosen ? chosen.open_vocab !== false : true;
+      pipeline.settings = settings;
       var sel = el.setSpecModel;
       if (!sel) return;
       sel.innerHTML = '';
@@ -615,7 +621,12 @@
 
     } else if (ev.stage === 'active') {
       // The retask metric. Emitted once per spec, on reaching TRACKING.
+      // `no_target` can arrive first and settle the run — acquiring later is
+      // still the better outcome, so let it overwrite the timer, not just the
+      // badge, or the two end up disagreeing.
+      pending.settled = false;
       settle(elapsed(), true, 'retask time');
+      el.timer.classList.remove('failed');
       setBadge('pass', 'TRACKING');
       speak('Target acquired.');
 

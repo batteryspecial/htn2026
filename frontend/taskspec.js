@@ -46,6 +46,20 @@
     // Verify.cls carries alias="class", so the wire field is "class".
     if (!isNonEmptyString(v['class'])) err(path + '.class', 'required non-empty string');
     if (!isNonEmptyString(v.text)) err(path + '.text', 'required non-empty string');
+    // The pipeline scores softmax over [text, "a {class}"]. Identical strings
+    // score 0.5 by construction and can never clear min_score, so the target is
+    // detected and then discarded on every frame.
+    if (isNonEmptyString(v.text) && isNonEmptyString(v['class'])) {
+      var bare = function (s) {
+        return s.toLowerCase().replace(/^(a|an|the)\s+/, '').replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      };
+      if (bare(v.text) === bare(v['class'])) {
+        err(path, 'text and class are the same words — CLIP contrasts them against each '
+          + 'other, so this scores 0.5 and discards every detection. Drop verify, or make '
+          + 'class the bare noun.');
+      }
+    }
+
     if (v.min_score !== undefined) {
       if (typeof v.min_score !== 'number' || Number.isNaN(v.min_score)) {
         err(path + '.min_score', 'must be a number');
