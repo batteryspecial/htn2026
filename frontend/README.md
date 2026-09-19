@@ -159,6 +159,64 @@ Qinkai should decide whether `detect` ought to be optional when
 of scope now, so it is free — but leave it free unless something genuinely needs
 a panic key, because space is what people hit when they mean "stop".
 
+## Talking to the pipeline
+
+The UI drives `perception/` directly, so the demo works before the orchestrator
+exists. Compile with OpenAI, `POST /spec`, read stages off `/ws/events`, read
+phase off `/ws/target`. Switch the pill to LIVE and the orchestrator does the
+posting instead; nothing else changes.
+
+| What | Where |
+| --- | --- |
+| `POST /spec` `{instruction_id, spec}` | dispatch after a valid compile |
+| `DELETE /spec` | the STOP button |
+| `GET /models` | the detector dropdown; also makes an unknown `model` a validation error |
+| `GET /health` | fps · resident model · device, next to the phase chip |
+| `WS /ws/events` | stage strip |
+| `WS /ws/target` | phase chip and the cx / area / conf readout |
+| `GET /video` | the camera pane |
+
+### The pipeline needs CORS
+
+**This is currently a blocker and the fix belongs in `perception/`.** The page is
+served from `:5173` and the pipeline from `:8001`, so every fetch is
+cross-origin. Without middleware the browser blocks `/spec`, `/health` and
+`/models` — while `/video` keeps working, because an `<img>` is not subject to
+CORS. That combination is maximally confusing: live video, dead everything else.
+
+Two lines in `server/api.py`, right after `app = FastAPI(...)`:
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
+```
+
+Verified end to end with that patch applied locally: instruction to TRACKING in
+4.84 s against the real pipeline on the `fake` detector.
+
+### Retask time
+
+The big number is now instruction sent → the pipeline's `active` event, which
+the state machine emits once per spec on reaching TRACKING. That is the metric
+the project is built around. Compile time is the small line underneath. If the
+spec is posted but nothing is ever acquired, the clock stops after 25 s and says
+so rather than counting forever.
+
+### Running the pipeline without a GPU
+
+`models.yaml` ships a `fake` detector with no weights behind it, which is enough
+to exercise the whole chain on a laptop:
+
+```bash
+cd perception
+VIDEO_SOURCE=0 python main.py        # or a file path, which loops
+```
+
+Pick `fake` in the detector dropdown. `yoloe` and `coco` report
+`available: false` with a reason when ultralytics or CUDA is missing, and the
+dropdown greys them out.
+
 ## Camera
 
 The annotated feed from Qinkai's pipeline is the projected centrepiece. It is a
@@ -183,15 +241,18 @@ automatically. There is a RECONNECT button for the cases this misses.
 
 ## What the screen shows
 
-- **Timer** — milliseconds from send to spec received, counting live. This is the
-  seed of the retask metric; the full `received → active` number lands with the
-  status board.
-- **VALID / INVALID badge** — the TaskSpec is checked in the browser against the
-  frozen contract (1–2 targets, 1–6 detect prompts, `mode` in `follow|center`,
-  `select` enum, `model == "yoloe"`). A hallucinated field shows up here in red
-  instead of in Qinkai's pipeline.
-- **Stage strip** — `received · compiled · sent · prepared · applied · active`,
-  lighting up from `/ws/status`.
+- **Timer** — instruction → `active`. The retask metric.
+- **VALID / INVALID badge** — the TaskSpec is checked in the browser against
+  `perception/contracts.py`: 1–2 targets, 1–6 detect prompts, `mode`, the
+  `select` enum, `model` against the live registry, and `extra="forbid"` on
+  every object. An invalid spec is never posted, because the pipeline would
+  422 it.
+- **Stage strip** — `received · compiled` (ours) then `model_loading ·
+  model_loaded · prepared · applied · active` from the pipeline. The two model
+  stages are dimmed because they only fire when the spec names a model that is
+  not already resident.
+- **Phase chip** — live `TargetState.phase`. Only `TRACKING` means the pipeline
+  has a lock.
 - **History** — last 8 instructions and their compile times, click to recall.
 
 ## Wiring up the real orchestrator

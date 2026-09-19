@@ -35,6 +35,8 @@
     <h2 class="panel-title">
       Camera
       <span id="videoBadge" class="badge idle">OFFLINE</span>
+      <span id="phaseChip" class="badge idle">—</span>
+      <span id="pipeReadout" class="title-note"></span>
       <button id="videoReconnect" class="title-btn">RECONNECT</button>
     </h2>
     <div class="video-frame">
@@ -45,6 +47,7 @@
       </div>
       <div class="video-objective" id="videoObjective">No objective</div>
     </div>
+    <div class="target-readout none" id="targetReadout">no target state</div>
   </section>
 
   <section class="panel panel-input">
@@ -74,6 +77,7 @@
 
     <div class="actions">
       <button id="sendBtn" class="btn primary">COMPILE</button>
+      <button id="stopBtn" class="btn stop" title="DELETE /spec — pipeline back to IDLE">STOP</button>
       <button id="clearBtn" class="btn ghost">Clear</button>
     </div>
 
@@ -141,6 +145,27 @@
     <span>OpenAI model</span>
     <input id="setOpenaiModel" type="text" spellcheck="false" placeholder="gpt-4o-mini">
     <small>Key status: <code id="keyStatus">—</code></small>
+  </label>
+
+  <label class="field">
+    <span>Pipeline base URL</span>
+    <input id="setPipelineBase" type="text" spellcheck="false" placeholder="http://localhost:8001">
+    <small>Qinkai's perception service. Supplies <code>/video</code>,
+    <code>/models</code>, <code>/health</code>, <code>/ws/events</code> and
+    <code>/ws/target</code>.</small>
+  </label>
+
+  <label class="field">
+    <span>Detector model</span>
+    <select id="setSpecModel"></select>
+    <small>From <code>GET /models</code>. Becomes <code>TaskSpec.model</code>;
+    the pipeline 422s an unknown one. <code>fake</code> runs the whole loop with
+    no weights and no GPU.</small>
+  </label>
+
+  <label class="field checkbox">
+    <input id="setSendToPipeline" type="checkbox">
+    <span>Post compiled specs straight to the pipeline</span>
   </label>
 
   <label class="field">

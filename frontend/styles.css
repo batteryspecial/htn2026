@@ -209,6 +209,42 @@ body {
 
 .title-btn:hover { background: var(--ochre); border-color: var(--ochre); }
 
+.title-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-transform: none;
+}
+
+.target-readout {
+  flex: 0 0 auto;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--tile);
+  border: 2px solid var(--ink);
+  padding: 7px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.target-readout.none { color: var(--ink-3); border-color: var(--grout); }
+
+.btn.stop {
+  background: var(--ttc-red);
+  color: var(--plate);
+  border-color: var(--ink);
+}
+
+.btn.stop:hover { background: var(--oxblood); }
+
+/* stages the pipeline only emits when it has to load a model */
+.stages li.optional { opacity: 0.32; }
+.stages li.optional.done { opacity: 1; }
+
 .video-frame {
   position: relative;
   flex: 1 1 auto;

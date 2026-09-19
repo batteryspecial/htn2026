@@ -12,7 +12,10 @@
     mode: 'mock',                       // 'live' | 'openai' | 'mock'
     apiBase: 'http://localhost:8000',
     wsUrl: '',                          // blank = derive from apiBase
-    videoUrl: 'http://localhost:8001/video',
+    pipelineBase: 'http://localhost:8001',
+    videoUrl: '',                       // blank = {pipelineBase}/video
+    sendToPipeline: true,               // POST /spec ourselves when not using the orchestrator
+    specModel: 'yoloe',                 // TaskSpec.model — must exist in GET /models
     openaiModel: 'gpt-6-astra',         // frontier: most headroom on unrehearsed phrasing
     lang: 'en-US',
     tts: true,
@@ -45,6 +48,8 @@
     if (q.get('live') === '1') merged.mode = 'live';
 
     merged.apiBase = String(merged.apiBase || '').replace(/\/+$/, '');
+    merged.pipelineBase = String(merged.pipelineBase || '').replace(/\/+$/, '');
+    if (!merged.videoUrl) merged.videoUrl = merged.pipelineBase + '/video';
     return merged;
   }
 
@@ -203,13 +208,13 @@
       target.detect = [headNoun];
       if (tailNoun && tailNoun !== headNoun) target.detect.push(tailNoun);
       target.relate = { keep: headNoun, if_contains: tailNoun || tail };
-      target.verify = { 'class': headNoun, text: ref, min_score: 0.25 };
+      target.verify = { 'class': headNoun, text: ref, min_score: 0.6 };
     } else {
       var noun = findNoun(ref);
       target.detect = [noun];
       var hasColor = COLORS.some(function (c) { return ref.toLowerCase().indexOf(c) !== -1; });
       if (hasColor || ref.split(/\s+/).length > 1) {
-        target.verify = { 'class': noun, text: ref, min_score: 0.25 };
+        target.verify = { 'class': noun, text: ref, min_score: 0.6 };
       }
     }
 
@@ -220,7 +225,7 @@
     return target;
   }
 
-  function mockCompile(text) {
+  function mockCompile(text, model) {
     var clean = String(text || '').trim();
     var lower = clean.toLowerCase();
     var mode = /\b(follow|chase|drive to|go to|approach)\b/.test(lower) ? 'follow' : 'center';
@@ -236,9 +241,9 @@
       spec_id: 'mock_' + String(mockCounter).padStart(3, '0'),
       targets: targets,
       mode: mode,
-      model: 'yoloe'
+      model: model || 'yoloe'
     };
-    if (targets.length === 2) spec.arbitration = { alternate_s: 5.0 };
+    if (targets.length === 2) spec.arbitration = { alternate_s: 3.0 };
     return spec;
   }
 
@@ -248,6 +253,7 @@
 
   /* onStage lets the mock drive the same stage strip the real /ws/status does. */
   MockApi.prototype.compile = function (text, onStage) {
+    var self = this;
     var instructionId = 'mock_i_' + Date.now();
 
     // An empty or purely non-noun instruction is the clarify path.
@@ -270,7 +276,7 @@
 
     return new Promise(function (resolve) {
       setTimeout(function () {
-        resolve({ instruction_id: instructionId, spec: mockCompile(text), raw: null });
+        resolve({ instruction_id: instructionId, spec: mockCompile(text, self.settings.specModel), raw: null });
       }, 420 + Math.random() * 260);
     });
   };
@@ -351,7 +357,7 @@
     'Never emit more than two targets. If three or more things are named, keep the two',
     'most prominent and drop the rest — an over-long spec is rejected outright, so a',
     'partial objective beats no objective.',
-    'With two targets set arbitration.alternate_s to 5.0; otherwise arbitration is null.',
+    'With two targets set arbitration.alternate_s to 3.0; otherwise arbitration is null.',
     '',
     'detect: 1 to 6 short open-vocabulary prompts for YOLOE. Plain singular nouns',
     '("person", "dog", "pencil", "bottle"). Never slang or pronouns — "guy", "dude",',
@@ -365,7 +371,9 @@
     '',
     'verify: a CLIP check, used when the operator gave an attribute detection cannot',
     'express (colour, pattern, writing). class is the detect noun it refines, text is the',
-    'full natural description, min_score 0.25. null when the instruction has no attribute.',
+    'full natural description, min_score 0.6. null when the instruction has no attribute.',
+    'The pipeline scores softmax over [verify.text, "a {class}"], so text should read as a',
+    'natural description of the thing, not a keyword list.',
     '',
     'relate: use when the target is defined by another object on or near it, e.g.',
     '"the person holding the blue bottle". keep is the noun to keep, if_contains is the',
@@ -380,11 +388,11 @@
     '"track the pencil" -> center; one target ref "pencil", detect ["pencil"], verify null,',
     '  relate null, select "largest"; arbitration null.',
     '"follow the person in red shoes" -> follow; ref "person in red shoes", detect ["person"],',
-    '  verify {class "person", text "person in red shoes", min_score 0.25}, relate null.',
-    '"track the pencil and the eraser" -> center; two targets; arbitration {alternate_s 5.0}.',
+    '  verify {class "person", text "person in red shoes", min_score 0.6}, relate null.',
+    '"track the pencil and the eraser" -> center; two targets; arbitration {alternate_s 3.0}.',
     '"follow the person holding the blue bottle" -> follow; detect ["person","bottle"],',
     '  relate {keep "person", if_contains "bottle"},',
-    '  verify {class "person", text "person holding the blue bottle", min_score 0.25}.'
+    '  verify {class "person", text "person holding the blue bottle", min_score 0.6}.'
   ].join('\n');
 
   function newSpecId() {
@@ -421,10 +429,10 @@
       if (t.relate === null) delete t.relate;
     });
     // The model drops arbitration on two-target specs about half the time even
-    // though the prompt asks for it. The value is fixed by the contract, so
-    // fill it here instead of relying on the model to remember.
+    // though the prompt asks for it. The pipeline defaults it to 3.0 anyway, so
+    // fill it explicitly rather than relying on the model to remember.
     if (Array.isArray(spec.targets) && spec.targets.length === 2 && !spec.arbitration) {
-      spec.arbitration = { alternate_s: 5.0 };
+      spec.arbitration = { alternate_s: 3.0 };
     }
     return spec;
   }
@@ -502,7 +510,7 @@
           }
 
           spec.spec_id = newSpecId();
-          spec.model = 'yoloe';
+          spec.model = s.specModel || 'yoloe';
           dropNulls(spec);
 
           emit('compiled');
@@ -531,9 +539,88 @@
       : { up: false, detail: 'no key — create frontend/config.local.js' });
   };
 
+  /* ---------- pipeline client (perception, :8001) ----------
+     Danny's orchestrator would normally sit in front of this. Until it exists
+     the UI can drive the pipeline itself: compile with OpenAI, POST /spec here,
+     and read stages off /ws/events. Same contract either way, so the
+     orchestrator can be slotted back in front without touching this file. */
+
+  function PipelineClient(settings) {
+    this.settings = settings;
+  }
+
+  PipelineClient.prototype._url = function (path) {
+    return this.settings.pipelineBase + path;
+  };
+
+  /* POST /spec {instruction_id, spec} -> 202 {accepted, instruction_id, spec_id}
+     A 422 means the registry rejected the model or a fixed-vocab detector does
+     not know a class. The pipeline also publishes a `failed` event for it, so
+     the status board shows the reason even if this promise is swallowed. */
+  PipelineClient.prototype.sendSpec = function (instructionId, spec) {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 8000);
+    return fetch(this._url('/spec'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction_id: instructionId, spec: spec }),
+      signal: ctrl.signal
+    }).then(function (res) {
+      clearTimeout(timer);
+      return res.text().then(function (raw) {
+        var payload = null;
+        try { payload = JSON.parse(raw); } catch (e) { /* below */ }
+        if (!res.ok) {
+          var detail = (payload && (payload.detail || payload.message)) || raw.slice(0, 200);
+          if (res.status === 422) throw new Error('pipeline rejected the spec: ' + detail);
+          throw new Error('pipeline ' + res.status + ': ' + detail);
+        }
+        return payload;
+      });
+    }, function (e) {
+      clearTimeout(timer);
+      throw new Error(friendlyError(e));
+    });
+  };
+
+  /* DELETE /spec -> IDLE. The stop control now the car is gone. */
+  PipelineClient.prototype.clearSpec = function () {
+    return fetch(this._url('/spec'), { method: 'DELETE' }).then(function (res) {
+      if (!res.ok) throw new Error('pipeline ' + res.status);
+      return res.json();
+    });
+  };
+
+  PipelineClient.prototype.health = function () {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 1500);
+    return fetch(this._url('/health'), { signal: ctrl.signal })
+      .then(function (res) { clearTimeout(timer); return res.json(); })
+      .then(function (h) { return { up: true, health: h }; })
+      .catch(function (e) { clearTimeout(timer); return { up: false, detail: friendlyError(e) }; });
+  };
+
+  /* GET /models -> {models:[{name, open_vocab, classes, loaded, available,...}], device} */
+  PipelineClient.prototype.models = function () {
+    return fetch(this._url('/models'))
+      .then(function (res) { return res.json(); })
+      .then(function (m) { return (m && m.models) || []; })
+      .catch(function () { return []; });
+  };
+
+  PipelineClient.prototype.eventsUrl = function () {
+    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/events';
+  };
+
+  PipelineClient.prototype.targetUrl = function () {
+    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/target';
+  };
+
   /* ---------- status socket (live mode only) ---------- */
-  function StatusSocket(settings, handlers) {
-    this.url = statusUrl(settings);
+  /* Accepts either a settings object (orchestrator status) or a bare ws:// URL
+     (the pipeline's /ws/events and /ws/target). */
+  function StatusSocket(target, handlers) {
+    this.url = typeof target === 'string' ? target : statusUrl(target);
     this.handlers = handlers || {};
     this.ws = null;
     this.backoff = 1000;
@@ -600,6 +687,7 @@
     saveSettings: saveSettings,
     statusUrl: statusUrl,
     extractSpec: extractSpec,
+    PipelineClient: PipelineClient,
     create: function (settings) {
       if (settings.mode === 'live') return new LiveApi(settings);
       if (settings.mode === 'openai') return new OpenAiApi(settings);

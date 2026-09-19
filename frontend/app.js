@@ -4,8 +4,19 @@
 (function () {
   'use strict';
 
-  var STAGES = ['received', 'compiled', 'sent', 'prepared', 'applied', 'active'];
+  /* Stages the perception pipeline actually emits, in the order its state
+     machine produces them. model_loading / model_loaded only appear when the
+     spec names a model that is not resident, so they are often skipped. The
+     first two are ours: the pipeline knows nothing about the LLM compile. */
+  var STAGES = ['received', 'compiled', 'model_loading', 'model_loaded', 'prepared', 'applied', 'active'];
+  var OPTIONAL_STAGES = ['model_loading', 'model_loaded'];
   var BAD_STAGES = ['rejected', 'failed', 'no_target'];
+
+  /* TargetState.phase — level-triggered, one per frame. Only TRACKING drives. */
+  var PHASE_CLASS = {
+    TRACKING: 'pass', ACQUIRING: 'pending', LOST: 'warn', NO_TARGET: 'warn',
+    FAULT: 'fail', BOOTING: 'idle', IDLE: 'idle', SWITCHING: 'pending', LOADING_MODEL: 'pending'
+  };
   var HISTORY_KEY = 'retask.history.v1';
   var HISTORY_MAX = 8;
 
@@ -26,12 +37,19 @@
     'setMode', 'setApiBase', 'setWsUrl', 'setLang', 'setTts', 'setAutoSend',
     'setOpenaiModel', 'keyStatus', 'saveSettings', 'closeSettings', 'derivedWs',
     'setVideoUrl', 'videoFeed', 'videoPlaceholder', 'videoObjective', 'videoBadge',
-    'videoReconnect', 'videoHint', 'cdot', 'clabel'
+    'videoReconnect', 'videoHint', 'cdot', 'clabel',
+    'phaseChip', 'pipeReadout', 'targetReadout', 'stopBtn',
+    'setPipelineBase', 'setSpecModel', 'setSendToPipeline'
   ].forEach(function (id) { el[id] = document.getElementById(id); });
 
   var settings = window.Api.loadSettings();
   var api = window.Api.create(settings);
-  var socket = null;
+  var pipeline = new window.Api.PipelineClient(settings);
+  var socket = null;            // orchestrator /ws/status
+  var eventSocket = null;       // pipeline /ws/events
+  var targetSocket = null;      // pipeline /ws/target
+  var knownModels = [];         // names from GET /models
+  var lastPhase = null;
 
   var currentSpec = null;
   var pending = null;          // { id, text, t0, settled }
@@ -69,7 +87,41 @@
       socket = new window.Api.StatusSocket(settings, { onEvent: onStatusEvent });
       socket.connect();
     }
+
+    // The pipeline is the source of truth for stages and phase whether or not
+    // the orchestrator is in the loop, so these stay connected in every mode.
+    if (eventSocket) { eventSocket.close(); eventSocket = null; }
+    if (targetSocket) { targetSocket.close(); targetSocket = null; }
+    pipeline.settings = settings;
+    eventSocket = new window.Api.StatusSocket(pipeline.eventsUrl(), { onEvent: onStatusEvent });
+    eventSocket.connect();
+    targetSocket = new window.Api.StatusSocket(pipeline.targetUrl(), { onEvent: onTargetState });
+    targetSocket.connect();
+
+    refreshModels();
     pollHealth();
+  }
+
+  function refreshModels() {
+    pipeline.models().then(function (list) {
+      knownModels = list.map(function (m) { return m.name; }).filter(Boolean);
+      var sel = el.setSpecModel;
+      if (!sel) return;
+      sel.innerHTML = '';
+      if (!knownModels.length) {
+        sel.appendChild(new Option(settings.specModel + ' (registry unreachable)', settings.specModel));
+        return;
+      }
+      list.forEach(function (m) {
+        var label = m.name
+          + (m.open_vocab ? ' · open vocab' : (m.classes ? ' · ' + m.classes.length + ' classes' : ''))
+          + (m.available === false ? ' · UNAVAILABLE' : (m.loaded ? ' · loaded' : ''));
+        var opt = new Option(label, m.name);
+        opt.disabled = m.available === false;
+        sel.appendChild(opt);
+      });
+      sel.value = settings.specModel;
+    });
   }
 
   function openDrawer() {
@@ -78,8 +130,11 @@
     el.keyStatus.textContent = settings.openaiKey
       ? 'loaded, ' + settings.openaiKey.length + ' chars, ends ' + settings.openaiKey.slice(-4)
       : 'missing — create frontend/config.local.js';
+    el.setPipelineBase.value = settings.pipelineBase;
+    el.setSendToPipeline.checked = settings.sendToPipeline;
     el.setVideoUrl.value = settings.videoUrl;
     el.setApiBase.value = settings.apiBase;
+    refreshModels();
     el.setWsUrl.value = settings.wsUrl;
     el.setLang.value = settings.lang;
     el.setTts.checked = settings.tts;
@@ -105,7 +160,10 @@
   el.saveSettings.addEventListener('click', function () {
     settings.mode = el.setMode.value;
     settings.openaiModel = el.setOpenaiModel.value.trim() || 'gpt-4o-mini';
-    settings.videoUrl = el.setVideoUrl.value.trim();
+    settings.pipelineBase = el.setPipelineBase.value.trim().replace(/\/+$/, '');
+    settings.sendToPipeline = el.setSendToPipeline.checked;
+    if (el.setSpecModel.value) settings.specModel = el.setSpecModel.value;
+    settings.videoUrl = el.setVideoUrl.value.trim() || (settings.pipelineBase + '/video');
     settings.apiBase = el.setApiBase.value.trim().replace(/\/+$/, '');
     settings.wsUrl = el.setWsUrl.value.trim();
     settings.lang = el.setLang.value.trim() || 'en-US';
@@ -342,8 +400,11 @@
     el.stages.innerHTML = '';
     STAGES.forEach(function (s) {
       var li = document.createElement('li');
-      li.textContent = s;
+      li.textContent = s.replace('model_', '');
       li.dataset.stage = s;
+      li.title = s;
+      // Only emitted when the spec names a model that is not already resident.
+      if (OPTIONAL_STAGES.indexOf(s) !== -1) li.classList.add('optional');
       el.stages.appendChild(li);
     });
   }
@@ -401,7 +462,8 @@
     resetStages();
     setBadge('pending', 'COMPILING');
 
-    pending = { id: null, text: text, t0: performance.now(), settled: false };
+    if (pending) clearTimeout(pending.acquireTimer);
+    pending = { id: null, text: text, t0: performance.now(), settled: false, compiled: false };
     var gen = ++generation;
     startTimer();
     markStage('received');
@@ -427,54 +489,97 @@
     });
   }
 
+  function dispatchEnabled() {
+    // In live mode the orchestrator posts the spec on our behalf.
+    return settings.sendToPipeline && settings.mode !== 'live';
+  }
+
   function deliverSpec(spec) {
-    if (!pending || pending.settled) return;
-    pending.settled = true;
+    if (!pending || pending.settled || pending.compiled) return;
+    pending.compiled = true;
+    pending.compileSeconds = elapsed();
 
-    var seconds = elapsed();
-    stopTimer();
-    renderTimer(seconds);
-    el.timerLabel.textContent = 'compile time';
     markStage('compiled');
-
     currentSpec = spec;
     el.json.innerHTML = window.TaskSpec.highlight(spec);
     setObjective(spec);
+    el.copyBtn.disabled = false;
+    el.downloadBtn.disabled = false;
 
-    var result = window.TaskSpec.validate(spec);
+    var result = window.TaskSpec.validate(spec, { models: knownModels });
     clearNotices();
     result.errors.forEach(function (e) { notice('error', e.msg, e.path); });
     result.warnings.forEach(function (w) { notice('warn', w.msg, w.path); });
 
     if (!result.ok) {
+      // Never post a spec we already know the pipeline will 422.
+      settle(pending.compileSeconds, false, 'invalid');
       setBadge('fail', 'INVALID');
-      el.timer.classList.add('failed');
-      speak('Spec rejected. ' + result.errors.length + ' contract ' + (result.errors.length === 1 ? 'error' : 'errors') + '.');
-    } else if (result.warnings.length) {
-      setBadge('warn', 'VALID · ' + result.warnings.length + ' WARN');
-      speak(window.TaskSpec.summarize(spec));
-    } else {
-      setBadge('pass', 'VALID');
-      speak(window.TaskSpec.summarize(spec));
+      speak('Spec rejected. ' + result.errors.length + ' contract '
+        + (result.errors.length === 1 ? 'error' : 'errors') + '.');
+      return;
     }
 
-    el.copyBtn.disabled = false;
-    el.downloadBtn.disabled = false;
-    pushHistory({ text: pending.text, seconds: seconds, spec: spec, ok: result.ok });
+    setBadge(result.warnings.length ? 'warn' : 'pass',
+      result.warnings.length ? 'VALID · ' + result.warnings.length + ' WARN' : 'VALID');
+    speak(window.TaskSpec.summarize(spec));
+    el.timerSub.textContent = 'compiled in ' + fmt(pending.compileSeconds) + 's';
+
+    if (!dispatchEnabled()) {
+      settle(pending.compileSeconds, result.ok, 'compile time');
+      return;
+    }
+
+    // Keep the clock running: the headline number is instruction -> active,
+    // and the pipeline emits `active` once per spec when it reaches TRACKING.
+    el.timerLabel.textContent = 'acquiring…';
+    pipeline.sendSpec(pending.id, spec).then(function () {
+      // If the pipeline never acquires, stop counting rather than run forever.
+      pending.acquireTimer = setTimeout(function () {
+        if (pending && !pending.settled) {
+          settle(pending.compileSeconds, result.ok, 'compiled (never acquired)');
+          notice('warn', 'no `active` event within 25s — the pipeline saw the spec but never reached TRACKING');
+        }
+      }, 25000);
+    }).catch(function (e) {
+      fail(e.message || String(e));
+    });
+  }
+
+  /* Stop the clock and record the run. `seconds` is whatever number this run
+     earned: retask time if the pipeline acquired, compile time otherwise. */
+  function settle(seconds, ok, label) {
+    if (!pending || pending.settled) return;
+    pending.settled = true;
+    clearTimeout(pending.acquireTimer);
+    stopTimer();
+    renderTimer(seconds);
+    el.timerLabel.textContent = label;
+    if (!ok) el.timer.classList.add('failed');
+    pushHistory({
+      text: pending.text,
+      seconds: seconds,
+      compileSeconds: pending.compileSeconds,
+      spec: currentSpec,
+      ok: ok,
+      acquired: label === 'retask time'
+    });
   }
 
   function fail(detail) {
-    if (!pending) return;
+    if (!pending || pending.settled) return;
+    var seconds = elapsed();
     pending.settled = true;
+    clearTimeout(pending.acquireTimer);
     stopTimer();
+    renderTimer(seconds);
     el.timer.classList.add('failed');
     el.timerLabel.textContent = 'failed';
     setBadge('fail', 'ERROR');
-    el.json.innerHTML = '<span class="j-dim">// no spec</span>';
-    clearNotices();
+    if (!pending.compiled) el.json.innerHTML = '<span class="j-dim">// no spec</span>';
     notice('error', detail || 'compile failed');
-    speak('Compile failed.');
-    pushHistory({ text: pending.text, seconds: elapsed(), spec: null, ok: false });
+    speak('Failed.');
+    pushHistory({ text: pending.text, seconds: seconds, spec: pending.compiled ? currentSpec : null, ok: false });
   }
 
   function clarify(question) {
@@ -494,24 +599,54 @@
 
   function onStatusEvent(ev) {
     if (!ev || !ev.stage) return;
-    if (pending && pending.id && ev.instruction_id && ev.instruction_id !== pending.id) return;
+    // /ws/events replays its recent backlog on connect, so events from a spec
+    // that predates this page load must not light up the strip.
+    if (!pending) return;
+    if (pending.id && ev.instruction_id && ev.instruction_id !== pending.id) return;
 
     markStage(ev.stage);
 
     if (ev.stage === 'compiled') {
       var spec = window.Api.extractSpec(ev.data) || (ev.data && ev.data.targets ? ev.data : null);
       if (spec) deliverSpec(spec);
+
     } else if (ev.stage === 'clarify') {
       clarify(ev.detail);
+
+    } else if (ev.stage === 'active') {
+      // The retask metric. Emitted once per spec, on reaching TRACKING.
+      settle(elapsed(), true, 'retask time');
+      setBadge('pass', 'TRACKING');
+      speak('Target acquired.');
+
+    } else if (ev.stage === 'no_target') {
+      // Not a failure: the spec is live, nothing matching is in frame yet.
+      notice('warn', ev.detail || 'nothing matching in frame — the spec is loaded and still looking');
+      if (!pending.settled) settle(pending.compileSeconds || elapsed(), false, 'no target');
+      setBadge('warn', 'NO TARGET');
+
     } else if (BAD_STAGES.indexOf(ev.stage) !== -1) {
-      if (ev.stage === 'no_target' && currentSpec) {
-        notice('warn', ev.detail || 'pipeline reports no target in frame');
-      } else {
-        fail(ev.detail || ('orchestrator stage: ' + ev.stage));
-      }
-    } else if (ev.stage === 'active' && pending) {
-      el.timerSub.textContent = 'target acquired at ' + fmt(elapsed()) + 's';
+      fail(ev.detail || ('pipeline stage: ' + ev.stage));
     }
+  }
+
+  /* One per frame off /ws/target. Level-triggered, so a dropped message
+     self-corrects; never used to drive the stage strip. */
+  function onTargetState(st) {
+    if (!st || !st.phase) return;
+    if (st.phase !== lastPhase) {
+      lastPhase = st.phase;
+      el.phaseChip.className = 'badge ' + (PHASE_CLASS[st.phase] || 'idle');
+      el.phaseChip.textContent = st.phase;
+    }
+    var bits = [];
+    if (st.label) bits.push(st.label);
+    if (st.visible) {
+      bits.push('cx ' + st.cx.toFixed(2), 'area ' + (st.area * 100).toFixed(1) + '%');
+      if (typeof st.conf === 'number') bits.push('conf ' + st.conf.toFixed(2));
+    }
+    el.targetReadout.textContent = st.visible ? bits.join('  ·  ') : 'not visible';
+    el.targetReadout.classList.toggle('none', !st.visible);
   }
 
   /* ================= history ================= */
@@ -703,6 +838,35 @@
     });
   }
 
+  /* GET /health on the pipeline: fps, resident model and device are the three
+     numbers worth glancing at while tuning on the day. */
+  function pollPipelineHealth() {
+    pipeline.health().then(function (r) {
+      if (!r.up) {
+        el.pipeReadout.textContent = '';
+        if (lastPhase !== null) {
+          lastPhase = null;
+          el.phaseChip.className = 'badge idle';
+          el.phaseChip.textContent = '—';
+        }
+        return;
+      }
+      var h = r.health || {};
+      el.pipeReadout.textContent = [
+        h.fps !== undefined ? h.fps + ' fps' : null,
+        h.model || null,
+        h.device || null
+      ].filter(Boolean).join('  ·  ');
+      // /ws/target is the live source; this only fills in before the first frame.
+      if (lastPhase === null && h.phase) {
+        el.phaseChip.className = 'badge ' + (PHASE_CLASS[h.phase] || 'idle');
+        el.phaseChip.textContent = h.phase;
+      }
+    });
+  }
+
+  setInterval(pollPipelineHealth, 2000);
+
   setInterval(pollHealth, 2000);
 
   /* ================= output actions ================= */
@@ -732,6 +896,20 @@
   el.clearBtn.addEventListener('click', function () {
     el.instruction.value = '';
     el.instruction.focus();
+  });
+
+  /* DELETE /spec — the pipeline drops to IDLE and publishes visible=false, so
+     anything downstream stops. This replaced E-STOP when the car went away. */
+  el.stopBtn.addEventListener('click', function () {
+    if (pending && !pending.settled) settle(elapsed(), false, 'stopped');
+    pipeline.clearSpec().then(function () {
+      setObjective(null);
+      setBadge('idle', 'IDLE');
+      notice('warn', 'pipeline cleared — back to IDLE');
+      speak('Stopped.');
+    }).catch(function (e) {
+      notice('error', 'could not clear the pipeline: ' + (e.message || e));
+    });
   });
 
   /* ================= keyboard ================= */
@@ -768,5 +946,6 @@
   loadHistory();
   setObjective(null);
   applySettings();
+  pollPipelineHealth();
   el.instruction.focus();
 })();

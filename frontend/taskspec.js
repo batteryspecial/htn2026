@@ -1,6 +1,9 @@
-/* TaskSpec — client-side mirror of the frozen contract in /shared/schemas.py.
-   Validates what the orchestrator returns so a hallucinated field shows up
-   here, in red, instead of at demo time in the pipeline. */
+/* TaskSpec — client-side mirror of perception/contracts.py.
+   Validates a compiled spec before it is posted, so a bad one shows up here in
+   red rather than as a 422 from the pipeline.
+
+   Kept deliberately strict in the same places pydantic is: every model there
+   sets extra="forbid", so an unknown key is a rejection, not a warning. */
 (function (global) {
   'use strict';
 
@@ -8,6 +11,19 @@
   var MODES = ['follow', 'center'];
   var SPEC_KEYS = ['spec_id', 'targets', 'mode', 'arbitration', 'model'];
   var TARGET_KEYS = ['ref', 'detect', 'verify', 'relate', 'select'];
+  var VERIFY_KEYS = ['class', 'text', 'min_score'];
+  var RELATE_KEYS = ['keep', 'if_contains'];
+  var ARBITRATION_KEYS = ['alternate_s'];
+
+  /* Pipeline-side defaults, from perception/contracts.py. Worth agreeing with:
+     a spec that omits these gets these. */
+  var DEFAULTS = {
+    mode: 'follow',
+    select: 'largest',
+    model: 'yoloe',
+    min_score: 0.6,
+    alternate_s: 3.0
+  };
 
   function isObject(v) {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -17,7 +33,15 @@
     return typeof v === 'string' && v.trim().length > 0;
   }
 
-  function validateVerify(v, path, err) {
+  function forbidExtra(obj, allowed, path, err) {
+    Object.keys(obj).forEach(function (k) {
+      if (allowed.indexOf(k) === -1) {
+        err(path ? path + '.' + k : k, 'not in the contract — pydantic sets extra="forbid", so this is a 422');
+      }
+    });
+  }
+
+  function validateVerify(v, path, err, warn) {
     if (!isObject(v)) { err(path, 'must be an object'); return; }
     // Verify.cls carries alias="class", so the wire field is "class".
     if (!isNonEmptyString(v['class'])) err(path + '.class', 'required non-empty string');
@@ -27,14 +51,19 @@
         err(path + '.min_score', 'must be a number');
       } else if (v.min_score < 0 || v.min_score > 1) {
         err(path + '.min_score', 'must be between 0 and 1');
+      } else if (v.min_score < 0.4) {
+        warn(path + '.min_score', v.min_score + ' is well under the pipeline default of '
+          + DEFAULTS.min_score + ' — the CLIP check will admit false positives');
       }
     }
+    forbidExtra(v, VERIFY_KEYS, path, err);
   }
 
   function validateRelate(r, path, err) {
     if (!isObject(r)) { err(path, 'must be an object'); return; }
     if (!isNonEmptyString(r.keep)) err(path + '.keep', 'required non-empty string');
     if (!isNonEmptyString(r.if_contains)) err(path + '.if_contains', 'required non-empty string');
+    forbidExtra(r, RELATE_KEYS, path, err);
   }
 
   function validateTarget(t, path, err, warn) {
@@ -52,7 +81,7 @@
       });
     }
 
-    if (t.verify !== undefined && t.verify !== null) validateVerify(t.verify, path + '.verify', err);
+    if (t.verify !== undefined && t.verify !== null) validateVerify(t.verify, path + '.verify', err, warn);
     if (t.relate !== undefined && t.relate !== null) validateRelate(t.relate, path + '.relate', err);
 
     if (t.select !== undefined && SELECT_VALUES.indexOf(t.select) === -1) {
@@ -62,14 +91,24 @@
       warn(path + '.select', '"locked" holds the current track — only valid once a target is already acquired');
     }
 
-    Object.keys(t).forEach(function (k) {
-      if (TARGET_KEYS.indexOf(k) === -1) warn(path + '.' + k, 'not in the contract — the pipeline will drop it');
-    });
+    // The pipeline detects on prompt_union(), which is detect plus
+    // relate.if_contains. Naming a relate noun that is not in detect still
+    // works, but it is a sign the compile went sideways.
+    if (t.relate && Array.isArray(t.detect)) {
+      if (t.detect.indexOf(t.relate.keep) === -1) {
+        warn(path + '.relate.keep', '"' + t.relate.keep + '" is not in detect — the kept box is never detected');
+      }
+    }
+
+    forbidExtra(t, TARGET_KEYS, path, err);
   }
 
-  function validate(spec) {
+  /* opts.models — names from GET /models. When supplied, an unknown model is an
+     error, because POST /spec rejects it with a 422 before touching a frame. */
+  function validate(spec, opts) {
     var errors = [];
     var warnings = [];
+    var known = (opts && opts.models) || null;
     function err(path, msg) { errors.push({ path: path, msg: msg }); }
     function warn(path, msg) { warnings.push({ path: path, msg: msg }); }
 
@@ -78,8 +117,18 @@
     }
 
     if (!isNonEmptyString(spec.spec_id)) err('spec_id', 'required non-empty string');
-    if (MODES.indexOf(spec.mode) === -1) err('mode', 'must be ' + MODES.join(' | '));
-    if (spec.model !== 'yoloe') err('model', 'must be "yoloe"');
+    if (spec.mode !== undefined && MODES.indexOf(spec.mode) === -1) {
+      err('mode', 'must be ' + MODES.join(' | '));
+    }
+
+    // model is a free string checked against the live registry, not a Literal.
+    if (spec.model !== undefined) {
+      if (!isNonEmptyString(spec.model)) {
+        err('model', 'must be a non-empty string');
+      } else if (known && known.length && known.indexOf(spec.model) === -1) {
+        err('model', '"' + spec.model + '" is not in the registry — available: ' + known.join(', '));
+      }
+    }
 
     if (!Array.isArray(spec.targets)) {
       err('targets', 'required array');
@@ -89,21 +138,23 @@
       spec.targets.forEach(function (t, i) { validateTarget(t, 'targets[' + i + ']', err, warn); });
     }
 
+    // arbitration has a default_factory, so omitting it is legal and means 3.0.
     if (spec.arbitration !== undefined && spec.arbitration !== null) {
       if (!isObject(spec.arbitration)) {
         err('arbitration', 'must be an object');
-      } else if (typeof spec.arbitration.alternate_s !== 'number' || Number.isNaN(spec.arbitration.alternate_s)) {
-        err('arbitration.alternate_s', 'must be a number');
-      } else if (spec.arbitration.alternate_s <= 0) {
-        err('arbitration.alternate_s', 'must be greater than 0');
+      } else {
+        if (spec.arbitration.alternate_s !== undefined) {
+          if (typeof spec.arbitration.alternate_s !== 'number' || Number.isNaN(spec.arbitration.alternate_s)) {
+            err('arbitration.alternate_s', 'must be a number');
+          } else if (spec.arbitration.alternate_s <= 0) {
+            err('arbitration.alternate_s', 'must be greater than 0');
+          }
+        }
+        forbidExtra(spec.arbitration, ARBITRATION_KEYS, 'arbitration', err);
       }
-    } else if (Array.isArray(spec.targets) && spec.targets.length === 2) {
-      warn('arbitration', 'two targets and no arbitration — the pipeline falls back to alternate_s 5.0');
     }
 
-    Object.keys(spec).forEach(function (k) {
-      if (SPEC_KEYS.indexOf(k) === -1) warn(k, 'not in the contract — the pipeline will drop it');
-    });
+    forbidExtra(spec, SPEC_KEYS, '', err);
 
     return { ok: errors.length === 0, errors: errors, warnings: warnings };
   }
@@ -159,6 +210,7 @@
   }
 
   global.TaskSpec = {
+    DEFAULTS: DEFAULTS,
     validate: validate,
     summarize: summarize,
     reorder: reorder,
