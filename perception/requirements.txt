@@ -1,0 +1,21 @@
+# core
+numpy
+opencv-python
+pydantic>=2
+pyyaml
+fastapi
+uvicorn[standard]
+websockets
+
+# vision
+torch
+torchvision
+ultralytics==8.4.155
+supervision==0.30.4
+open_clip_torch
+# YOLOE's text encoder; ultralytics auto-installs it, but not inside a venv without pip
+clip @ git+https://github.com/ultralytics/CLIP.git
+
+# dev
+pytest
+httpx

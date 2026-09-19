@@ -1,0 +1,32 @@
+# Every model the service can switch to.
+#
+# Adding one is an edit here plus, at most, a class in detectors/.
+# `.engine` builds are made on the GPU host by scripts/build_engines.py and are
+# never committed; elsewhere they simply report available: false.
+
+models:
+  # Open vocabulary. Stays in PyTorch: a TensorRT export would bake the prompt
+  # vocabulary into the engine and remove the reason we run it.
+  - name: yoloe
+    type: yoloe
+    weights: yoloe-11s-seg.pt
+    preload: true
+
+  # Fixed 80-class COCO. Fast, and the fallback when a prompt is a COCO noun.
+  - name: coco
+    type: ultralytics_fixed
+    weights: yolo11s.pt
+    preload: true
+
+  # Same weights, compiled. GPU host only.
+  - name: coco_trt
+    type: ultralytics_fixed
+    weights: yolo11s.engine
+    requires_cuda: true
+    preload: true
+
+  # No model behind it. Lets the loop, the hot-swap and the UI run on a laptop
+  # with no weights and no GPU.
+  - name: fake
+    type: fake
+    preload: true

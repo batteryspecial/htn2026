@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.pt
+*.engine
+*.onnx
+clips/
+.pytest_cache/
+*.ts
