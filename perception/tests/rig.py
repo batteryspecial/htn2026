@@ -26,6 +26,7 @@ MODELS_YAML = (
     "models:\n"
     "  - name: fake\n    type: fake\n    preload: true\n"
     "  - name: other\n    type: fake\n    preload: true\n"
+    "  - name: scene\n    type: fake\n    sweep: true\n"
     "  - name: gpu_only\n    type: ultralytics_fixed\n"
     "    weights: nope.engine\n    requires_cuda: true\n"
 )

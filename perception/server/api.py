@@ -32,6 +32,8 @@ from contracts import (
     BehaviorSpec,
     CountQuery,
     CountResult,
+    DescribeRequest,
+    DescribeResult,
     Health as HealthView,
     HudText,
     LookQuery,
@@ -258,6 +260,57 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
             wanted = set(q.selector.detect)
             tracks = [t for t in tracks if t.label in wanted]
         return LookResult(tracks=tracks)
+
+    @app.post("/describe")
+    async def describe(req: DescribeRequest) -> DescribeResult:
+        """Everything needed to answer a question about the scene.
+
+        Perception does not call a vision model — it has no LLM and should not
+        grow one. This returns the frame, what the detector can actually see,
+        and a prompt built from both; the agent supplies the model.
+
+        With `sweep`, a dedicated detector takes one pass over a broad everyday
+        vocabulary, because an open-vocabulary detector only finds what it is
+        named and an open question names nothing. Without it, only what the
+        running behaviours already track is reported.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        import scene as scene_mod
+
+        state = svc.loop.last_state
+        behaviors = [b.label or b.kind for b in (state.behaviors if state else [])
+                     if b.state != "PAUSED"]
+        tracks = list(state.tracks) if state else []
+        swept, detail = False, None
+
+        if req.sweep:
+            frame = svc.loop.view.frame
+            if frame is None:
+                detail = "no frame to look at"
+            else:
+                candidates = scene_mod.candidates_for(req.candidates)
+                try:
+                    # Off the event loop: this is a model call, and a query
+                    # that blocks the server also blocks the video feed.
+                    tracks = await run_in_threadpool(
+                        scene_mod.sweep, svc.registry, frame, candidates,
+                        frame.shape)
+                    swept = True
+                except Exception as exc:
+                    # Fall back to what the behaviours already see rather than
+                    # failing the question outright. The message, not the
+                    # exception type: the agent reads this and may act on it.
+                    log.warning("scene sweep failed: %s", exc)
+                    detail = f"{exc}; reporting tracked objects only"
+
+        objects = scene_mod.to_objects(tracks)
+        return DescribeResult(
+            snapshot_url="/snapshot", objects=objects,
+            summary=scene_mod.summarize(objects),
+            prompt=scene_mod.build_prompt(req.question, objects, behaviors),
+            behaviors=behaviors, swept=swept, detail=detail,
+        )
 
     @app.get("/snapshot")
     async def snapshot():

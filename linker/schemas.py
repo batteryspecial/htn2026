@@ -344,6 +344,64 @@ class LookResult(BaseModel):
     tracks: list[TrackView] = Field(default_factory=list)
 
 
+class SceneObject(BaseModel):
+    """One thing in the scene, described in words rather than coordinates.
+
+    The agent and the vision model both read this, and neither wants pixels:
+    "a laptop, centre-left, large" is usable in a sentence where
+    `cx=-0.31, area=0.18` is not.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    where: str            # "centre", "lower left", "far right"
+    size: str             # "small" | "medium" | "large" | "very large"
+    conf: float
+    count: int = 1        # several of the same thing in the same place
+    cx: float = 0.0
+    cy: float = 0.0
+    area: float = 0.0
+
+
+class DescribeRequest(BaseModel):
+    """POST /describe. Everything needed to answer a question about the scene.
+
+    Perception does not call a vision model — it has no LLM and should not
+    grow one. It returns the frame, what it can actually see, and a prompt
+    built from both; the agent supplies the model.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: The operator's question, verbatim. Shapes the returned prompt only.
+    question: str = "What do you see?"
+    #: Classes to sweep for. Empty uses the built-in everyday vocabulary.
+    candidates: list[str] = Field(default_factory=list, max_length=64)
+    #: Run a detection sweep. Off means report only what behaviours already
+    #: track, which is faster and much narrower.
+    sweep: bool = True
+
+
+class DescribeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ts: float = Field(default_factory=time.time)
+    #: Fetch the raw, un-annotated frame here and give it to the vision model.
+    snapshot_url: str = "/snapshot"
+    objects: list[SceneObject] = Field(default_factory=list)
+    #: One English sentence, usable as an answer on its own when the question
+    #: is simple enough that no vision model is needed.
+    summary: str = ""
+    #: Ready to send to a vision model alongside the snapshot. Carries the
+    #: grounding, so the model's answer and the overlay agree about the scene.
+    prompt: str = ""
+    #: What the camera is doing, so the answer can mention it.
+    behaviors: list[str] = Field(default_factory=list)
+    swept: bool = False
+    detail: str | None = None
+
+
 class HudText(BaseModel):
     """POST /hud. The instruction the operator typed, shown on the frame."""
 
@@ -369,6 +427,8 @@ __all__ = [
     "BehaviorView",
     "CountQuery",
     "CountResult",
+    "DescribeRequest",
+    "DescribeResult",
     "Event",
     "EventType",
     "Health",
@@ -380,6 +440,7 @@ __all__ = [
     "Pick",
     "Relate",
     "RenderSpec",
+    "SceneObject",
     "Selector",
     "StateView",
     "TrackView",

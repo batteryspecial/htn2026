@@ -59,7 +59,7 @@ class FakeDetector(Detector):
         self._script = frames
         self._frame = 0
 
-    def infer(self, frame: np.ndarray) -> sv.Detections:
+    def infer(self, frame: np.ndarray, conf: float | None = None) -> sv.Detections:
         i, self._frame = self._frame, self._frame + 1
         if self._script is not None:
             return self._script[min(i, len(self._script) - 1)]
