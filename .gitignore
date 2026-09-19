@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Model weights: large, and architecture- or version-specific. Every host
+# downloads or builds its own. TensorRT engines are tied to one GPU and one
+# TensorRT version, so committing them is actively wrong.
+weights/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.ts
+*.safetensors
+*.bin
+
+# Recordings and run output. Clips are the test fixtures; out/ and footage/
+# are produced by scripts/clip_test.py and are regenerable.
+clips/
+out/
+footage/
+snapshots/
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

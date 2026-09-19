@@ -66,8 +66,9 @@ def contrastive_scores(
     # 100 is CLIP's own trained logit scale; without it the softmax is mush.
     pos = image_vecs @ phrase_vecs.T * 100.0
     base = np.einsum("ij,ij->i", image_vecs, baseline_vecs)[:, None] * 100.0
-    # Two-way softmax, written as a sigmoid of the difference.
-    return (1.0 / (1.0 + np.exp(-(pos - base)))).astype(np.float32)
+    # Two-way softmax, written as a sigmoid of the difference. Clipped because
+    # a confident score overflows exp long before it changes the answer.
+    return (1.0 / (1.0 + np.exp(-np.clip(pos - base, -60.0, 60.0)))).astype(np.float32)
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -154,10 +155,7 @@ class AttributeBank:
         if ids is None:
             return
 
-        stale = [
-            i for i in range(len(dets))
-            if now - self._cache.get(int(ids[i]), Scored()).at > self.ttl
-        ][: self.batch]
+        stale = [i for i in range(len(dets)) if self._stale(int(ids[i]), now)][: self.batch]
         if not stale:
             return
 
@@ -191,6 +189,11 @@ class AttributeBank:
             self._cache[int(ids[i])] = entry
 
         self._evict(set(int(v) for v in ids))
+
+    def _stale(self, track_id: int, now: float) -> bool:
+        """A track never scored is always stale; one scored recently is not."""
+        entry = self._cache.get(track_id)
+        return entry is None or now - entry.at > self.ttl
 
     def _evict(self, live: set[int]) -> None:
         """Forget tracks that are long gone. A live stream never ends."""

@@ -1,0 +1,15 @@
+{
+  "name": "people counter",
+  "clip": "clips/real.mp4",
+  "model": "yoloe",
+  "duration_s": 12,
+  "steps": [
+    {"at": 1.0, "add": {"behavior_id": "count", "kind": "highlight",
+                        "label": "people",
+                        "subject": {"detect": ["person"]}}}
+  ],
+  "expect": {
+    "count": {"reaches": "active", "min_matches": 2, "acquire_under_ms": 2000,
+              "events": ["acquired"]}
+  }
+}

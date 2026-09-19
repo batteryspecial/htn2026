@@ -77,26 +77,45 @@ class ClipEncoder:
 
 
 class HashEncoder:
-    """A stand-in with CLIP's interface and none of its weights.
+    """A stand-in with CLIP's interface, none of its weights, and its geometry.
 
-    Deterministic: the same text always gives the same vector, and an image is
-    encoded from its mean colour, so a "red" crop really does land nearer the
-    vector for "red" than for "blue". That is enough to test every code path
-    around the encoder, and it never pretends to be a real model.
+    Getting the geometry right is what makes it a fair test. Real CLIP puts a
+    plain class description roughly *between* the attribute phrases, which is
+    why contrastive scoring separates them. A fake built from unrelated random
+    vectors puts every non-match at 0.5, right on the threshold, and would make
+    the tests pass or fail on noise.
+
+    So: each attribute word gets its own direction, an image is encoded as the
+    direction of its dominant colour, and any other text (notably the plain
+    `"a {class}"` baseline) lands on the centroid of all of them. A matching
+    phrase then beats the baseline decisively and a non-matching one loses
+    decisively, exactly as real CLIP behaves.
     """
+
+    WORDS = ("red", "green", "blue", "yellow")
 
     def __init__(self, dim: int = 32) -> None:
         self.dim = dim
+        self._basis = {w: self._seeded(w, dim) for w in self.WORDS}
+        self._centroid = _unit(np.mean(np.stack(list(self._basis.values())), axis=0))
 
-    def _seeded(self, key: str) -> np.ndarray:
+    @staticmethod
+    def _seeded(key: str, dim: int) -> np.ndarray:
         digest = hashlib.sha256(key.encode()).digest()
         rng = np.random.default_rng(int.from_bytes(digest[:8], "big"))
-        return _unit(rng.standard_normal(self.dim).astype(np.float32))
+        return _unit(rng.standard_normal(dim).astype(np.float32))
+
+    def _for_text(self, text: str) -> np.ndarray:
+        lowered = text.lower()
+        hits = [self._basis[w] for w in self.WORDS if w in lowered]
+        # No attribute word: this is a plain class description, so it sits
+        # between the attributes rather than off on its own.
+        return _unit(np.sum(hits, axis=0)) if hits else self._centroid
 
     def encode_text(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), np.float32)
-        return np.stack([self._seeded(t) for t in texts])
+        return np.stack([self._for_text(t) for t in texts])
 
     def encode_images(self, crops: list[np.ndarray]) -> np.ndarray:
         if not crops:
@@ -104,7 +123,5 @@ class HashEncoder:
         out = []
         for c in crops:
             bgr = c.reshape(-1, c.shape[-1]).mean(axis=0) if c.size else np.zeros(3)
-            # Name the dominant channel so a colour word and a colour agree.
-            word = ("blue", "green", "red")[int(np.argmax(bgr))]
-            out.append(self._seeded(word))
+            out.append(self._basis[("blue", "green", "red")[int(np.argmax(bgr))]])
         return np.stack(out)

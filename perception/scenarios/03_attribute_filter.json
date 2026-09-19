@@ -1,0 +1,19 @@
+{
+  "name": "attribute filter: everyone except one described person",
+  "clip": "clips/real.mp4",
+  "model": "yoloe",
+  "duration_s": 20,
+  "steps": [
+    {"at": 1.0, "add": {"behavior_id": "all", "kind": "highlight",
+                        "label": "everyone",
+                        "subject": {"detect": ["person"]}}},
+    {"at": 6.0, "add": {"behavior_id": "filtered", "kind": "highlight",
+                        "label": "not in a dark jacket",
+                        "subject": {"detect": ["person"],
+                                    "exclude": ["a person wearing a dark jacket"]}}}
+  ],
+  "expect": {
+    "all":      {"reaches": "active", "min_matches": 2},
+    "filtered": {"reaches": "active", "min_matches": 1}
+  }
+}
