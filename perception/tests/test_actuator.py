@@ -160,6 +160,34 @@ def test_the_same_instance_does_cancel_the_arrow(rig):
     assert not arrows(rig)
 
 
+def test_a_weakly_scored_subject_can_still_be_reacquired(rig):
+    """The whole demo runs at 0.15-0.30, so an absolute confidence bar on
+    remembering the subject's appearance means it is never remembered."""
+    rig.paint("red")
+    rig.add(kind="track", pick="ref")
+    rig.settle()
+    rig.frames(6, seen=boxes(RIGHT_EDGE, conf=0.2))
+    rig.frames(6, seen=boxes())
+    assert arrows(rig)
+    rig.frames(6, seen=boxes(CENTER, conf=0.2))
+    assert not arrows(rig), "a weak but genuine subject could never be reacquired"
+
+
+def test_an_arrow_never_outlives_the_loss_that_set_it(rig):
+    """Direction is latched at the moment of loss. If it is not cleared on
+    every sighting, the previous exit points the next arrow the wrong way."""
+    rig.paint("red")
+    rig.add(kind="track", pick="largest")
+    rig.settle()
+    rig.frames(6, seen=boxes(RIGHT_EDGE))
+    rig.frames(6, seen=boxes())
+    assert [a.direction for a in arrows(rig)] == ["right"]
+
+    rig.frames(6, seen=boxes(LEFT_EDGE))
+    rig.frames(6, seen=boxes())
+    assert [a.direction for a in arrows(rig)] == ["left"], "stale exit direction"
+
+
 # 4. The motor on its own -------------------------------------------------
 def test_the_virtual_motor_draws_nothing_for_no_command():
     assert VirtualMotor().command(None, (480, 640), 0.0) == []

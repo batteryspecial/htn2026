@@ -102,6 +102,9 @@ class Track(Behavior):
         cx = float((box[0] + box[2]) / 2 / w * 2 - 1)
         cy = float((box[1] + box[3]) / 2 / h * 2 - 1)
         self._last_cx = cx
+        # Any sighting invalidates a stored exit direction. Kept above the
+        # confirmation gate so a stale arrow cannot outlive the loss that set it.
+        self._exit_side = None
         ids = frame.tracks.tracker_id
         self.data.update(cx=round(cx, 3), cy=round(cy, 3),
                          area=round(float((box[2] - box[0]) * (box[3] - box[1]) / (w * h)), 4),
@@ -112,7 +115,6 @@ class Track(Behavior):
             return
         was_lost = self.state in ("LOST", "SEARCHING")
         self.to("EDGE" if abs(cx) > EDGE_AT else "TRACKING")
-        self._exit_side = None
         if not self._announced:
             self._announced = True
             outcome.events.append(self.event(
@@ -131,9 +133,11 @@ class Track(Behavior):
 
     def _remember(self, frame: Frame, chosen: int) -> None:
         """Keep the appearance of a confident sighting, for re-identification."""
+        # Held steadily is the test, not a confidence number: an open-vocabulary
+        # phrase scores 0.15-0.30 for its whole life, so any absolute bar sits
+        # above the entire working range and nothing is ever remembered.
         ids = frame.tracks.tracker_id
-        conf = frame.tracks.confidence
-        if ids is None or (conf is not None and conf[chosen] < 0.6):
+        if ids is None or self.state not in ("TRACKING", "EDGE"):
             return
         entry = frame.bank.get(int(ids[chosen]))
         if entry is None or entry.embedding is None:
@@ -166,10 +170,13 @@ class Track(Behavior):
                 reason=f"{self.label} near the edge"
             )
         if self.state in ("LOST", "SEARCHING"):
-            side = self._exit_side or "left"
+            # No recorded exit means no idea which way. Drawing a guess is worse
+            # than drawing nothing: half the time it sends the operator away.
+            if self._exit_side is None:
+                return None
             return MotorCommand(
-                rate_deg_s=-20.0 if side == "left" else 20.0,
-                reason=f"pan {side}",
+                rate_deg_s=-20.0 if self._exit_side == "left" else 20.0,
+                reason=f"pan {self._exit_side}",
                 urgent=True
             )
         return None
