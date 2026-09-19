@@ -38,7 +38,7 @@ from contracts import (
     LookResult,
     ModelChoice,
 )
-from detectors.registry import Registry
+from zoo.registry import Registry
 from runtime.capture import Capture
 from runtime.events import Bus
 from runtime.health import Health
@@ -190,8 +190,11 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
     async def set_model(choice: ModelChoice):
-        """Swap the detector. Behaviours the new model cannot see are paused
-        with a reason and resume when a model that can see them returns."""
+        """Swap the model filling a role. Defaults to the detector.
+
+        Behaviours the new model cannot serve are paused with a reason and
+        resume when one that can returns.
+        """
         try:
             entry = svc.registry.entry(choice.name)
         except KeyError:
@@ -199,13 +202,23 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
                            f"available: {svc.registry.names()}")
         if not entry.available:
             return _reject(f"model {choice.name!r} unavailable: {entry.unavailable_reason}")
+        if entry.role != "detector":
+            # Aux roles are swapped in place: nothing about the frame loop or
+            # the tracker depends on which pose model is active.
+            svc.registry.set_active(entry.role, choice.name)
+            return {"accepted": True, "model": choice.name, "role": entry.role}
         svc.builder.set_model(choice.name)
-        return {"accepted": True, "model": choice.name}
+        return {"accepted": True, "model": choice.name, "role": "detector"}
 
     @app.get("/models")
     async def models():
-        """What this machine can do. The agent's device manifest."""
-        return {"models": svc.registry.manifest(), "device": resolve_device()}
+        """What this machine can do. The agent's device manifest.
+
+        `roles` is the quick answer to "is a gesture trigger possible at all"
+        without reading the whole model list.
+        """
+        return {"models": svc.registry.manifest(), "roles": svc.registry.roles(),
+                "device": resolve_device()}
 
     # 3. Introspection ---------------------------------------------------
     @app.get("/health")

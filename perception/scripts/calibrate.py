@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from attributes.clip_cache import AttributeBank  # noqa: E402
 from attributes.encoders import ClipEncoder  # noqa: E402
 from config import setup_logging  # noqa: E402
-from detectors.registry import Registry  # noqa: E402
+from zoo.registry import Registry  # noqa: E402
 from supervision.tracker.byte_tracker.core import ByteTrack  # noqa: E402
 
 

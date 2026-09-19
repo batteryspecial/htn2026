@@ -15,7 +15,7 @@ from actuator.virtual import VirtualMotor
 from attributes.encoders import HashEncoder
 from contracts import BehaviorSpec
 from detectors.base import empty_detections
-from detectors.registry import Registry
+from zoo.registry import Registry
 from runtime.events import Bus
 from runtime.health import Health
 from runtime.loop import InferenceLoop

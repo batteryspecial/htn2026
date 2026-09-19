@@ -77,7 +77,7 @@ class Timings:
 class InferenceLoop:
     def __init__(self, capture: Capture, builder, health: Health,
                  state_bus: Bus, event_bus: Bus, shared: Shared | None = None,
-                 actuator: Actuator | None = None) -> None:
+                 actuator: Actuator | None = None, registry=None) -> None:
         self.capture = capture
         self.builder = builder
         self.health = health
@@ -85,6 +85,7 @@ class InferenceLoop:
         self.event_bus = event_bus
         self.shared = shared or Shared()
         self.actuator = actuator
+        self.registry = registry or getattr(builder, "registry", None)
 
         self.world: World | None = None
         self.view = View()
@@ -191,9 +192,33 @@ class InferenceLoop:
         return self._publish(self._state(now, self._tracks(tracks, frame.shape)),
                              frame, layers)
 
+    def _run_skills(self, frame: np.ndarray) -> dict:
+        """Run aux models, but only the ones some behaviour actually wants.
+
+        A pipeline with no gesture behaviour pays nothing for one being
+        possible. A failure here degrades that behaviour, never the frame.
+        """
+        wanted = self.world.roles_needed() if self.world else set()
+        if not wanted or self.registry is None:
+            return {}
+        out = {}
+        for role in wanted:
+            model = self.registry.try_get_active(role)
+            if model is None:
+                continue
+            try:
+                t0 = time.perf_counter()
+                if role == "pose":
+                    out["pose"] = model.keypoints(frame)
+                self.timings.mark(role, time.perf_counter() - t0)
+            except Exception:
+                log.exception("%s model failed", role)
+        return out
+
     def _run_behaviors(self, frame, tracks, now, active) -> tuple[list[Layer], object]:
         ctx = Frame(image=frame, tracks=tracks, bank=self.shared.bank, now=now,
-                    shape=frame.shape[:2], trails=self.shared.paths())
+                    shape=frame.shape[:2], trails=self.shared.paths(),
+                    skills=self._run_skills(frame))
         layers: list[Layer] = []
         motor, motor_started = None, -1.0
         for b in active:

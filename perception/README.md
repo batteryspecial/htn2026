@@ -47,16 +47,20 @@ one never disturbs the others. The server assigns the id.
 
 ## Behaviour kinds
 
-| kind | states | built |
-|---|---|---|
-| `highlight` | ACTIVE | ✅ |
-| `track` | ACQUIRING → TRACKING ⇄ EDGE → LOST → SEARCHING | ✅ |
-| `watch` | ARMING → ARMED → FIRED → COOLDOWN | — |
-| `count_line` | ACTIVE | — |
-| `privacy` | ACTIVE | — |
-| `pan_to` | GUIDING → REACHED | — |
-| `pose_trigger` | ACTIVE | — |
-| `keyboard` | SEARCHING ⇄ LOCKED | — |
+| kind | states | events | built |
+|---|---|---|---|
+| `highlight` | ACTIVE | `count_changed` | ✅ |
+| `track` | ACQUIRING → TRACKING ⇄ EDGE → LOST → SEARCHING | `acquired` `lost` `reacquired` | ✅ |
+| `watch` | ARMING → ARMED → FIRED → COOLDOWN | `armed` `missing` `moved` `near` `appeared` | ✅ |
+| `count_line` | ACTIVE | `crossed` | ✅ |
+| `privacy` | ACTIVE | — | ✅ |
+| `pan_to` | GUIDING → REACHED | `reached` | needs odometry |
+| `pose_trigger` | ACTIVE | `hand_raised` | needs a pose model |
+| `keyboard` | SEARCHING ⇄ LOCKED | `keyboard_locked` `step` | needs an OCR model |
+
+`watch` takes `triggers` and a `cooldown_s`; `count_line` takes a normalized
+`line`; `privacy` takes `keep_ref` and `mode`. Malformed params are refused
+synchronously with a reason, not accepted and failed later.
 
 Unbuilt kinds are registered and refuse with a message naming what they need,
 so the orchestrator can be written against the whole contract today. Any kind
@@ -70,10 +74,13 @@ with a reason and resumes by itself when a capable model returns.
 | `POST /behaviors` | start one → `{id}`; 422 with a reason the agent can act on |
 | `GET /behaviors` · `DELETE /behaviors/{id}` · `DELETE /behaviors` | list, stop one, stop all |
 | `POST /model` · `GET /models` | swap the detector; what this machine can do |
+| `POST /references` · `GET /references` · `GET /references/{id}.jpg` | register an appearance from an upload or from the frame |
 | `GET /health` · `GET /state` · `POST /hud` | status; full frame state; on-screen instruction |
 | `POST /query/count` · `POST /query/look` | median count over a window; what is visible now |
 | `GET /video` · `GET /frame.jpg` · `GET /snapshot` | enriched MJPEG; one enriched frame; one **raw** frame |
+| `GET /snapshots/{event_id}.jpg` | the crop an event fired on |
 | `WS /ws/state` · `WS /ws/events` | per-frame state; things that happened |
+| `POST /spec` · `WS /ws/status` | legacy TaskSpec intake and stage stream, for the older operator UI. See `server/legacy.py`; delete once both sides speak `BehaviorSpec` |
 
 `/snapshot` is deliberately un-annotated: the agent's vision model should see
 the world, not our drawings of it.
@@ -98,7 +105,7 @@ behaviours. The operator UI belongs to the orchestrator.
 ## Testing against real clips
 
 ```bash
-pytest                                        # 199 tests, no weights or GPU needed
+pytest                                        # 248 tests, no weights or GPU needed
 python scripts/clip_test.py scenarios/*.json --dump out/ --record footage/
 python scripts/calibrate.py clips/duck.mp4 "a yellow duck" "a brown duck" --detect duck
 python scripts/validate_spec.py plan.json     # would perception accept the agent's output?
@@ -115,6 +122,15 @@ gave, because a passing assertion is not the same as a correct answer.
   person would say, and send several — the union is free. A selector that
   matches nothing for a few seconds now says so on its own status, so the agent
   can rephrase instead of sitting on a dead behaviour.
+- **Phrasing does not transfer between scenes.** The same duck in another room:
+  every phrase that scored 12/12 in the first clip scored **0/12** in the
+  second, and `"yellow rubber duck"` was the one that worked. Treat a known-good
+  phrase as a first guess. `../SELECTORS.md` is the full guide, written for the
+  agent to retrieve.
+- **Adjectives belong in `detect` when they identify and in `include`/`exclude`
+  when they discriminate.** One duck described goes in `detect`; one person
+  singled out from several goes in the attribute pair. Getting it backwards
+  fails both ways.
 - **Pair `include` with `exclude`.** Absolute attribute scores drift with
   lighting; a comparison does not. A cream coat scored 0.78 for "wearing a dark
   jacket" — over any sane bar — but 1.00 for "wearing a cream coat". Attributes

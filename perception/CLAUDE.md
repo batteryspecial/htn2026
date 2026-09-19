@@ -85,21 +85,22 @@ Target: 25–30 fps at 720p input, 640 px detector size on the 4070.
 }
 ```
 
-**CLIP scoring:** contrastive softmax over `[text, f"a {label}"]` × 100; pass at p ≥ 0.6 (tune on clips). Cache per `track_id`.
+**CLIP scoring:** contrastive softmax over `[text, f"a {label}"]` × 100. Cache per `track_id`, score the upper body only. When a selector has both `include` and `exclude`, the decision is **which phrase wins**, not whether either clears a bar — measured, a cream coat scores 0.78 for "dark jacket" and 1.00 for "cream coat", so the ranking is right where the absolute number is not. Absolute bar (`min_score`, default 0.75) only when one side is given alone.
 **Reference match:** cosine ≥ threshold *and* ≥ 0.05 above the second-best candidate.
+**Prompt phrasing:** `detect` is open-vocabulary text-image matching, not a class lookup. Descriptive phrases beat bare nouns — `"yellow duck"` 12/12 frames, `"duck"` 0/12 — and phrasing does not transfer between scenes. Adjectives belong in `detect` when they *identify* the object and in `include`/`exclude` when they *discriminate* between instances of one class. Full guide for the agent: `../SELECTORS.md`.
 
 ## Behavior kinds
 
 | Kind | Params | States | Events | Demo |
 |---|---|---|---|---|
-| `highlight` | — | ACTIVE, PAUSED | `count_changed` | 1, 5, 6, 8, 15 |
-| `track` | `guidance: true` | ACQUIRING → TRACKING ⇄ EDGE → LOST → SEARCHING (10 s); PAUSED | `acquired`, `lost`, `reacquired` | 2, 5, 6, 7, 8 |
-| `watch` | `triggers[]`, `cooldown_s: 5` | ARMING (subject stable 1 s, baseline learned) → ARMED → FIRED → COOLDOWN → ARMED; PAUSED | `armed`, `missing`, `moved`, `near`, `appeared` | 3, 9, 10 |
-| `count_line` | `line: [[x1,y1],[x2,y2]]` normalized (default vertical center) | ACTIVE | `crossed` (in/out counts) | 13 |
-| `privacy` | `keep_ref`, `mode: blur\|pixelate` | ACTIVE | — | 12 |
-| `pan_to` | `deg`, `hfov_deg: 70` | GUIDING → REACHED | `reached` | 4 |
-| `pose_trigger` | `gesture: hand_raised` | ACTIVE | `hand_raised` | 11 |
-| `keyboard` | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
+| `highlight` ✅ | — | ACTIVE, PAUSED | `count_changed` | 1, 5, 6, 8, 15 |
+| `track` ✅ | `guidance: true` | ACQUIRING → TRACKING ⇄ EDGE → LOST → SEARCHING (10 s); PAUSED | `acquired`, `lost`, `reacquired` | 2, 5, 6, 7, 8 |
+| `watch` ✅ | `triggers[]`, `cooldown_s: 5` | ARMING (subject stable 1 s, baseline learned) → ARMED → FIRED → COOLDOWN → ARMED; PAUSED | `armed`, `missing`, `moved`, `near`, `appeared` | 3, 9, 10 |
+| `count_line` ✅ | `line: [[x1,y1],[x2,y2]]` normalized (default vertical center) | ACTIVE | `crossed` (in/out counts) | 13 |
+| `privacy` ✅ | `keep_ref`, `mode: blur\|pixelate` | ACTIVE | — | 12 |
+| `pan_to` ⏳ | `deg`, `hfov_deg: 70` | GUIDING → REACHED | `reached` | 4 |
+| `pose_trigger` ⏳ needs pose model | `gesture: hand_raised` | ACTIVE | `hand_raised` | 11 |
+| `keyboard` ⏳ needs OCR model | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
 
 Triggers for `watch`:
 `{"type":"missing","after_s":2}`, `{"type":"moved","min_shift":0.15}`, `{"type":"near","other":Selector,"margin":0.1}`, `{"type":"appeared","other":Selector}`.
@@ -184,7 +185,19 @@ perception/
 
 `torch`, `ultralytics`, `supervision`, `open_clip_torch`, `rfdetr`, `easyocr`, `opencv-python`, `fastapi`, `uvicorn[standard]`, `python-multipart`, `pydantic>=2`, `pyyaml`, `numpy`.
 
-## Build order
+## Build state
+
+Built and proven on recorded clips: the frame loop, capture, YOLOE, ByteTrack,
+the declarative renderer, `/video`, the ops queue, `/behaviors`, events, CLIP
+attributes with include/exclude, `relate`, references, the virtual motor and
+guidance arrows, and the `highlight` `track` `watch` `count_line` `privacy`
+behaviours. 248 tests, no weights or GPU needed.
+
+Outstanding, all of it blocked on *adding a model* rather than on pipeline
+work: `pose_trigger` (pose), `keyboard` (OCR), `rfdetr` (detector), and
+`pan_to` (optical-flow odometry, no model). See the model zoo plan.
+
+## Build order (original)
 
 1. Loop, capture, YOLOE, ByteTrack, renderer, `/video`, `highlight` behavior, ops queue, `/behaviors`, events → demos 1, 5, 6, 8.
 2. `track` + virtual motor arrows + identity on reacquire → 2 (partial).

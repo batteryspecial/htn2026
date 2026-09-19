@@ -353,11 +353,12 @@ class HudText(BaseModel):
 
 
 class ModelChoice(BaseModel):
-    """POST /model."""
+    """POST /model. The role is inferred from the model unless given."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    role: str | None = None
 
 
 __all__ = [

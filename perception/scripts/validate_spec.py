@@ -45,7 +45,7 @@ def load(argv: list[str]) -> list[dict]:
 
 
 def local_models() -> dict:
-    from detectors.registry import Registry
+    from zoo.registry import Registry
 
     reg = Registry.from_yaml()
     return {m["name"]: m for m in reg.manifest()}

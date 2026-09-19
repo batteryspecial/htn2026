@@ -3,6 +3,9 @@
 `ClipEncoder` is the real one. `HashEncoder` is deterministic nonsense with the
 same interface, so every test above this line runs without weights, without a
 download and without a GPU.
+
+Both fill the `embedder` role in the zoo, so both answer `load()` and
+`is_loaded` like every other model there.
 """
 
 from __future__ import annotations
@@ -38,6 +41,11 @@ class ClipEncoder:
         self._preprocess = None
         self._tokenizer = None
         self.device = "cpu"
+        self._loaded = False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
 
     def load(self) -> None:
         import open_clip
@@ -54,6 +62,7 @@ class ClipEncoder:
         self._tokenizer = open_clip.get_tokenizer(self.model_name)
         self.dim = model.text_projection.shape[-1] if hasattr(model, "text_projection") else 512
         self._torch = torch
+        self._loaded = True
 
     def encode_text(self, texts: list[str]) -> np.ndarray:
         import torch
@@ -98,6 +107,15 @@ class HashEncoder:
         self.dim = dim
         self._basis = {w: self._seeded(w, dim) for w in self.WORDS}
         self._centroid = _unit(np.mean(np.stack(list(self._basis.values())), axis=0))
+        self._loaded = True   # nothing to load; it is arithmetic
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def load(self) -> None:
+        """Nothing to do. Present so the zoo can treat it like any model."""
+        self._loaded = True
 
     @staticmethod
     def _seeded(key: str, dim: int) -> np.ndarray:

@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 from contracts import BehaviorSpec
-from detectors.registry import Registry
+from zoo.registry import Registry
 from runtime.workers import Builder
 from runtime.capture import Capture
 from runtime.events import Bus
@@ -171,7 +171,7 @@ def test_concurrent_submits_never_lose_an_instruction(builder):
 def test_a_rejected_behavior_leaves_the_world_alone(builder):
     good = builder.add_behavior(behavior())
     drain(builder)
-    builder.add_behavior(behavior(kind="pan_to"))
+    builder.add_behavior(behavior(kind="keyboard"))
     out = drain(builder)
     assert any(isinstance(o, Rejected) for o in out)
     assert set(builder.world.behaviors) == {good}

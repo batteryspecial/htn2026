@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from detectors.base import UnknownClassError
-from detectors.registry import Registry
+from zoo.registry import Registry
 
 pytestmark = pytest.mark.weights
 

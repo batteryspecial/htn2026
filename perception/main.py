@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 
 from config import CFG, resolve_device, setup_logging
-from detectors.registry import Registry
+from zoo.registry import Registry
 from runtime.workers import Builder
 from runtime.capture import Capture
 from runtime.events import make_buses
@@ -21,7 +21,6 @@ from runtime.loop import InferenceLoop
 from runtime.health import Health
 from runtime.world import Shared
 from server.api import Service, create_app
-from attributes.encoders import ClipEncoder
 from actuator.virtual import VirtualMotor
 
 log = logging.getLogger("perception.main")
@@ -40,15 +39,10 @@ def build() -> Service:
     events, states = make_buses()
     health = Health(emit=events.publish)
 
-    # CLIP is optional: without it, behaviours with no attributes still work
-    # and ones that need attributes simply never match. Better than refusing
-    # to start.
-    encoder = ClipEncoder()
-    try:
-        encoder.load()
-    except Exception as exc:
-        log.warning("CLIP unavailable, attributes disabled: %s", exc)
-        encoder = None
+    # The embedder comes from the zoo like every other model, and is optional:
+    # without it, behaviours with no attributes still work and ones that need
+    # attributes simply never match. Better than refusing to start.
+    encoder = registry.try_get_active("embedder")
 
     # The service comes up even with no usable detector: it reports its
     # status rather than refusing to start, so the operator sees what is wrong.
@@ -60,18 +54,15 @@ def build() -> Service:
     shared = Shared()
     shared.bank.encoder = encoder
     loop = InferenceLoop(capture, builder, health, states, events, shared,
-                         actuator=VirtualMotor())
+                         actuator=VirtualMotor(), registry=registry)
     return Service(registry=registry, capture=capture, builder=builder, loop=loop,
                    health=health, events=events, states=states)
 
 
 def _default_model(registry: Registry) -> str:
-    """Prefer an open-vocabulary model: the agent invents class names."""
-    loaded = [m for m in registry.manifest() if m["loaded"]]
-    for m in loaded:
-        if m["open_vocab"]:
-            return m["name"]
-    return loaded[0]["name"] if loaded else "yoloe"
+    """The zoo already prefers an open-vocabulary detector, because the agent
+    invents class names and a fixed vocabulary would refuse most of them."""
+    return registry.active("detector") or "yoloe"
 
 
 app = create_app(build())

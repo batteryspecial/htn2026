@@ -302,7 +302,7 @@ def test_an_unimplemented_kind_is_refused_before_anything_changes(rig):
     rig.settle()
     rig.frames(4, seen=boxes(THING))
 
-    rig.builder.add_behavior(BehaviorSpec(kind="pan_to", subject={"detect": ["face"]}))
+    rig.builder.add_behavior(BehaviorSpec(kind="keyboard", subject={"detect": ["keyboard"]}))
     rig.settle()
     rig.frames(2, seen=boxes(THING))
     assert len(rig.loop.behaviors) == 1

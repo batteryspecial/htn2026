@@ -186,8 +186,9 @@ def test_events_with_no_old_equivalent_are_dropped():
 def test_the_agent_can_learn_what_kinds_exist(client):
     kinds = client.get("/behaviors").json()["kinds"]
     assert set(kinds["available"]) >= {"highlight", "track", "watch",
-                                       "count_line", "privacy"}
-    assert set(kinds["planned"]) >= {"pan_to", "pose_trigger", "keyboard"}
+                                       "count_line", "privacy", "pan_to",
+                                       "pose_trigger"}
+    assert set(kinds["planned"]) >= {"keyboard"}
 
 
 def test_the_agent_can_learn_the_vocabulary(client):
@@ -199,7 +200,7 @@ def test_the_agent_can_learn_the_vocabulary(client):
 def test_every_refusal_carries_a_reason_the_agent_can_act_on(client):
     """"invalid" is useless to a model that has to retry."""
     for payload, expect in [
-        ({"kind": "pan_to", "subject": {"detect": ["x"]}}, "not implemented"),
+        ({"kind": "keyboard", "subject": {"detect": ["x"]}}, "not implemented"),
         ({"kind": "watch", "subject": {"detect": ["x"]}, "params": {"triggers": []}},
          "triggers"),
     ]:

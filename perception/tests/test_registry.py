@@ -9,7 +9,7 @@ import textwrap
 
 import pytest
 
-from detectors.registry import (
+from zoo.registry import (
     Entry,
     ModelUnavailableError,
     Registry,
@@ -87,7 +87,7 @@ def test_a_failed_load_is_reported_and_stays_unloaded(tmp_path, monkeypatch):
     )
     def boom(self):
         raise OSError("weights corrupt")
-    monkeypatch.setattr(type(r.entry("fake").detector), "load", boom)
+    monkeypatch.setattr(type(r.entry("fake").model), "load", boom)
 
     with pytest.raises(OSError):
         r.get("fake")
@@ -100,15 +100,18 @@ def test_preload_reports_failures_without_raising(tmp_path, monkeypatch):
         write_yaml(tmp_path, "models:\n  - name: fake\n    type: fake\n    preload: true\n")
     )
     monkeypatch.setattr(
-        type(r.entry("fake").detector), "load", lambda self: (_ for _ in ()).throw(OSError("nope"))
+        type(r.entry("fake").model), "load", lambda self: (_ for _ in ()).throw(OSError("nope"))
     )
     assert r.preload() == ["fake"]
 
 
-def test_a_second_get_after_success_does_not_reload(reg):
+def test_a_second_get_after_success_does_not_reload(reg, monkeypatch):
     first = reg.get("fake")
     calls = []
-    type(first).load = lambda self: calls.append(1)
+    # monkeypatch, not a bare class assignment: assigning to the class leaks
+    # into every test that runs afterwards, and this one shares FakeDetector
+    # with most of the suite.
+    monkeypatch.setattr(type(first), "load", lambda self: calls.append(1))
     assert reg.get("fake") is first
     assert calls == []
 

@@ -80,7 +80,7 @@ def test_a_malformed_behavior_is_rejected(client, bad):
 
 
 def test_an_unimplemented_kind_says_what_is_available(client):
-    r = client.post("/behaviors", json=spec(kind="pan_to", detect=("face",)))
+    r = client.post("/behaviors", json=spec(kind="keyboard", detect=("keyboard",)))
     assert r.status_code == 422
     assert "not implemented" in r.json()["detail"]
     assert "highlight" in r.json()["detail"]
@@ -89,7 +89,7 @@ def test_an_unimplemented_kind_says_what_is_available(client):
 def test_a_rejected_behavior_never_starts(client):
     client.post("/behaviors", json=spec())
     client.rig.settle()
-    client.post("/behaviors", json=spec(kind="pan_to"))
+    client.post("/behaviors", json=spec(kind="keyboard"))
     client.rig.settle()
     client.rig.frames(3, seen=boxes(THING))
     assert len(client.rig.loop.behaviors) == 1
@@ -135,7 +135,7 @@ def test_listing_shows_what_is_running_and_what_is_planned(client):
     d = client.get("/behaviors").json()
     assert len(d["behaviors"]) == 1
     assert "highlight" in d["kinds"]["available"]
-    assert "pan_to" in d["kinds"]["planned"]
+    assert "keyboard" in d["kinds"]["planned"]
 
 
 # 3. Model ----------------------------------------------------------------

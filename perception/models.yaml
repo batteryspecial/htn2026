@@ -1,25 +1,36 @@
-# Every model the service can switch to.
+# The model zoo: every model this service can use, of every kind.
 #
-# Adding one is an edit here plus, at most, a class in detectors/.
-# `.engine` builds are made on the GPU host by scripts/build_engines.py and are
-# never committed; elsewhere they simply report available: false.
+# `role` is what a model is FOR. Exactly one model per role is active at a
+# time, so swapping the pose model is the same operation as swapping the
+# detector. `type` is how it is BUILT; the table in zoo/roles.py maps each
+# type to its role and its constructor.
+#
+# Adding a model is an entry here plus, at most, a class in the folder its
+# role belongs to (detectors/, attributes/, skills/). Anything that cannot run
+# on this machine reports available: false with a reason, and the service
+# still boots.
 
 models:
-  # Open vocabulary. Stays in PyTorch: a TensorRT export would bake the prompt
-  # vocabulary into the engine and remove the reason we run it.
+  # --- detectors -----------------------------------------------------
+  # Open vocabulary, and the default: the agent invents class names, so a
+  # fixed vocabulary would refuse most of them. Stays in PyTorch because a
+  # TensorRT export would bake the prompt vocabulary into the engine.
   - name: yoloe
+    role: detector
     type: yoloe
     weights: yoloe-11s-seg.pt
     preload: true
 
-  # Fixed 80-class COCO. Fast, and the fallback when a prompt is a COCO noun.
+  # Fixed 80-class COCO. Faster, and the fallback when a prompt is a COCO noun.
   - name: coco
+    role: detector
     type: ultralytics_fixed
     weights: yolo11s.pt
     preload: true
 
-  # Same weights, compiled. GPU host only.
+  # Same weights, compiled. GPU host only; unavailable everywhere else.
   - name: coco_trt
+    role: detector
     type: ultralytics_fixed
     weights: yolo11s.engine
     requires_cuda: true
@@ -28,5 +39,31 @@ models:
   # No model behind it. Lets the loop, the hot-swap and the UI run on a laptop
   # with no weights and no GPU.
   - name: fake
+    role: detector
     type: fake
     preload: true
+
+  # --- embedders -----------------------------------------------------
+  # Attributes, reference matching and re-identification all read this. With
+  # no embedder the pipeline still runs; attribute checks simply never match.
+  - name: clip
+    role: embedder
+    type: open_clip
+    weights: ViT-B-32/laion2b_s34b_b79k
+    preload: true
+
+  # --- pose ----------------------------------------------------------
+  # Loaded only while a gesture behaviour is active, so a pipeline with no
+  # pose_trigger pays nothing for one being possible.
+  - name: pose
+    role: pose
+    type: ultralytics_pose
+    weights: yolo11n-pose.pt
+    preload: false
+
+  # A second pose model is exactly this: one more entry. Uncomment to make it
+  # selectable with POST /model {"name": "pose_fullbody", "role": "pose"}.
+  # - name: pose_fullbody
+  #   role: pose
+  #   type: ultralytics_pose
+  #   weights: yolo11s-pose.pt

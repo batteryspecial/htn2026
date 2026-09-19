@@ -11,6 +11,8 @@ from __future__ import annotations
 from behaviors.base import Behavior, UnsupportedBehavior
 from behaviors.count_line import CountLine
 from behaviors.highlight import Highlight
+from behaviors.pan_to import PanTo
+from behaviors.pose_trigger import PoseTrigger
 from behaviors.privacy import Privacy
 from behaviors.track import Track
 from behaviors.watch import Watch
@@ -24,18 +26,6 @@ class NotYetBuilt(Behavior):
         raise UnsupportedBehavior(
             f"behaviour kind {self.spec.kind!r} is not implemented yet "
             f"({self.needs}). Available now: {sorted(BUILT)}")
-
-
-class PanTo(NotYetBuilt):
-    kind = "pan_to"
-    states = ("GUIDING", "REACHED", "PAUSED")
-    needs = "needs frame-to-frame odometry"
-
-
-class PoseTrigger(NotYetBuilt):
-    kind = "pose_trigger"
-    states = ("ACTIVE", "PAUSED")
-    needs = "needs the pose model"
 
 
 class Keyboard(NotYetBuilt):

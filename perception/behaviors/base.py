@@ -71,6 +71,9 @@ class Frame:
     now: float
     shape: tuple[int, int]
     trails: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
+    #: Results from aux models that ran this frame, keyed by role. Present
+    #: only when some behaviour asked for them.
+    skills: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,6 +98,9 @@ class Behavior:
     states: tuple[BehaviorState, ...] = ("ACTIVE", "PAUSED")
     initial: BehaviorState = "ACTIVE"
     emits: tuple[EventType, ...] = ()
+    #: Model roles this kind cannot work without. A behaviour whose role is
+    #: unfilled is PAUSED with a reason rather than left looking healthy.
+    needs_roles: tuple[str, ...] = ()
     #: Frames of agreement before a state change. Debounced both ways so one
     #: dropped detection never restarts a behaviour and one false positive
     #: never triggers it.

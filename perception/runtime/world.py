@@ -69,26 +69,41 @@ class World:
                         texts.append(t)
         return texts
 
-    def revalidate(self) -> list[str]:
-        """Pause behaviours this model cannot see; resume the ones it can.
+    def revalidate(self, registry=None) -> list[str]:
+        """Pause behaviours this setup cannot serve; resume the ones it can.
 
-        A fixed-vocabulary model cannot be asked for "duck". Rather than drop
-        the behaviour, it is held with a reason and comes back by itself when a
-        model that can see it returns.
+        Two reasons a behaviour cannot run: the active detector has no word for
+        its subject, or a model role it needs is unfilled. Either way it is
+        held with a reason rather than dropped, and comes back by itself when
+        the missing piece returns.
         """
         vocab = self.detector.classes
         changed = []
         for b in self.behaviors.values():
-            wanted = [c for sel in b.selectors() for c in sel.prompts()]
-            missing = [] if vocab is None else [
-                c for c in wanted if c not in set(vocab)]
-            if missing and b.state != "PAUSED":
-                b.pause(f"{self.model_name} cannot detect {missing}")
+            reason = None
+            if registry is not None:
+                unfilled = [r for r in getattr(b, "needs_roles", ())
+                            if not registry.has_role(r)]
+                if unfilled:
+                    reason = f"no {', '.join(unfilled)} model available"
+            if reason is None and vocab is not None:
+                wanted = [c for sel in b.selectors() for c in sel.prompts()]
+                missing = [c for c in wanted if c not in set(vocab)]
+                if missing:
+                    reason = f"{self.model_name} cannot detect {missing}"
+
+            if reason and b.state != "PAUSED":
+                b.pause(reason)
                 changed.append(b.id)
-            elif not missing and b.state == "PAUSED":
+            elif not reason and b.state == "PAUSED":
                 b.resume()
                 changed.append(b.id)
         return changed
+
+    def roles_needed(self) -> set[str]:
+        """Aux roles some active behaviour wants this frame."""
+        return {r for b in self.behaviors.values() if b.state != "PAUSED"
+                for r in getattr(b, "needs_roles", ())}
 
     def summary(self) -> str:
         if not self.behaviors:

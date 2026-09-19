@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import CFG, setup_logging  # noqa: E402
 from contracts import BehaviorSpec  # noqa: E402
-from detectors.registry import Registry  # noqa: E402
+from zoo.registry import Registry  # noqa: E402
 from runtime.workers import Builder  # noqa: E402
 from runtime.capture import Capture  # noqa: E402
 from runtime.events import make_buses  # noqa: E402

@@ -26,7 +26,7 @@ import time
 from behaviors.base import Behavior
 from behaviors.kinds import build as build_behavior
 from contracts import BehaviorSpec
-from detectors.registry import Registry
+from zoo.registry import Registry
 from runtime.ops import (
     Accepted,
     Applied,
@@ -233,7 +233,7 @@ class Builder:
                       behaviors=behaviors, text_vectors=texts,
                       baseline_vectors=baselines,
                       ref_vectors=self.references.vectors())
-        world.revalidate()
+        world.revalidate(self.registry)
         return world
 
     def _encode(self, behaviors) -> tuple[dict, dict]:
