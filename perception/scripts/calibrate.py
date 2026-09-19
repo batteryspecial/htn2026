@@ -29,7 +29,7 @@ from attributes.clip_cache import AttributeBank  # noqa: E402
 from attributes.encoders import ClipEncoder  # noqa: E402
 from config import setup_logging  # noqa: E402
 from zoo.registry import Registry  # noqa: E402
-from supervision.tracker.byte_tracker.core import ByteTrack  # noqa: E402
+from runtime.world import new_tracker  # noqa: E402
 
 
 def parse(argv):
@@ -78,7 +78,9 @@ def main() -> int:
     if not cap.isOpened():
         print(f"cannot open {clip}")
         return 2
-    tracker = ByteTrack()
+    # Must match the loop's tracker: a stricter gate here would silently sample
+    # only high-confidence tracks and bias every phrase score it reports.
+    tracker = new_tracker()
     samples: dict[str, list[float]] = {p: [] for p in phrases}
     per_track: dict[int, dict[str, list[float]]] = {}
     crops_saved = 0

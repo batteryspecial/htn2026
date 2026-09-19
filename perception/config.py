@@ -39,7 +39,33 @@ class Config:
 
     # 2. Compute
     DEVICE: str = _env("DEVICE", "auto")  # auto | cuda | mps | cpu
-    CONF_THRESHOLD: float = _f("CONF_THRESHOLD", 0.25)
+    # 0.25 is the right cutoff for a COCO detector, where a real object scores
+    # 0.8+. Open-vocabulary matching is not that: measured on yoloe-11s with the
+    # subject genuinely in frame, "yellow duck" scores 0.18-0.27 and
+    # "person's face" 0.12-0.28, so 0.25 rejects about half of the correct
+    # detections for exactly the objects a judge will name.
+    #
+    # The trade-off is real and points the other way for counting: a lower
+    # cutoff admits more texture boxes, which MIN_BOX_FRAC only partly catches
+    # because junk is small *and* low-confidence. `track` and `highlight` want
+    # this low; `count_line` wants it high. Worth revisiting per behaviour kind
+    # rather than leaving one global number to serve both.
+    CONF_THRESHOLD: float = _f("CONF_THRESHOLD", 0.15)
+
+    # ByteTrack will not *create* a track below (this + 0.1): det_thresh is
+    # track_activation_threshold + 0.1, and Step 4 of update_with_tensors skips
+    # anything under it. The stock 0.25 therefore gates at 0.35, which is right
+    # for COCO (a real object scores 0.8+) and wrong for open-vocabulary text
+    # matching, where a correct detection often sits at 0.15-0.30. Measured on
+    # yoloe-11s: a duck present scores 0.18-0.27 and is detected on every
+    # frame, yet the stock tracker creates no track at all, so the behaviour
+    # layer sees nothing and reports no subjects while the logs show inference
+    # succeeding. Keep this at or below CONF_THRESHOLD - 0.1 so the detector's
+    # cutoff is the only one that bites.
+    TRACK_ACTIVATION_THRESHOLD: float = _f("TRACK_ACTIVATION_THRESHOLD", 0.02)
+    LOST_TRACK_BUFFER: int = _i("LOST_TRACK_BUFFER", 60)
+    MIN_MATCHING_THRESHOLD: float = _f("MIN_MATCHING_THRESHOLD", 0.8)
+    TRACK_FRAME_RATE: int = _i("TRACK_FRAME_RATE", 30)
 
     # 3. Timing / state machine
     ACQUIRE_TIMEOUT_S: float = _f("ACQUIRE_TIMEOUT_S", 3.0)

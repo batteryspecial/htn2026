@@ -33,6 +33,22 @@ log = logging.getLogger("perception.world")
 TRAIL_LEN = 40
 
 
+def new_tracker() -> ByteTrack:
+    """A tracker whose activation gate matches the detector's.
+
+    `ByteTrack()` gates new tracks at `track_activation_threshold + 0.1` = 0.35,
+    which silently discards the 0.15-0.30 band open-vocabulary detections land
+    in. Every construction of a tracker has to go through here, or the loop
+    detects a subject on every frame and the behaviour layer never sees it.
+    """
+    return ByteTrack(
+        track_activation_threshold=CFG.TRACK_ACTIVATION_THRESHOLD,
+        lost_track_buffer=CFG.LOST_TRACK_BUFFER,
+        minimum_matching_threshold=CFG.MIN_MATCHING_THRESHOLD,
+        frame_rate=CFG.TRACK_FRAME_RATE,
+    )
+
+
 @dataclass
 class World:
     model_name: str
@@ -116,7 +132,7 @@ class World:
 class Shared:
     """State that outlives a world rebuild. Owned by the loop."""
 
-    tracker: ByteTrack = field(default_factory=ByteTrack)
+    tracker: ByteTrack = field(default_factory=new_tracker)
     bank: AttributeBank = field(default_factory=AttributeBank)
     trails: dict[int, deque] = field(default_factory=lambda: defaultdict(
         lambda: deque(maxlen=TRAIL_LEN)))
@@ -126,7 +142,7 @@ class Shared:
 
     def reset(self, why: str) -> None:
         log.info("resetting tracker, attributes and trails: %s", why)
-        self.tracker = ByteTrack()
+        self.tracker = new_tracker()
         self.bank = AttributeBank(self.bank.encoder)
         self.trails.clear()
 
