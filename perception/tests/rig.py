@@ -133,7 +133,7 @@ class Rig:
         deadline = time.time() + timeout
         while time.time() < deadline:
             self.frames(1)
-            if self.builder._q.empty() and self.loop.world is self.builder.world:
+            if self.builder.idle and self.loop.world is self.builder.world:
                 return
             time.sleep(0.004)
         raise AssertionError("builder never settled")

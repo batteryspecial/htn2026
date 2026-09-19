@@ -19,3 +19,4 @@ clip @ git+https://github.com/ultralytics/CLIP.git
 # dev
 pytest
 httpx
+python-multipart

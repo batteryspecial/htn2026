@@ -65,14 +65,16 @@ class Run:
         if failed:
             print(f"  (models that would not load: {failed})")
 
-        encoder = None
-        if self.needs_attributes:
-            encoder = ClipEncoder()
-            try:
-                encoder.load()
-            except Exception as exc:
-                print(f"  (CLIP unavailable, attribute checks will not match: {exc})")
-                encoder = None
+        # CLIP is loaded for every scenario, not just ones using include or
+        # exclude. Re-identification compares appearance embeddings, so without
+        # it a follow-cam can only recover while the tracker still remembers
+        # the id, which is a much weaker guarantee than the one being claimed.
+        encoder = ClipEncoder()
+        try:
+            encoder.load()
+        except Exception as exc:
+            print(f"  (CLIP unavailable; attributes and re-ID will not work: {exc})")
+            encoder = None
 
         ev, st = make_buses()
         ev.subscribe_callback(self._on_event)
@@ -90,12 +92,6 @@ class Run:
         self.loop = InferenceLoop(self.capture, self.builder, self.health, st, ev,
                                   shared, actuator=VirtualMotor())
         self.streamer = Streamer(self.loop) if (self.record or self.dumper) else None
-
-    @property
-    def needs_attributes(self) -> bool:
-        return any(step.get("add", {}).get("subject", {}).get("include")
-                   or step.get("add", {}).get("subject", {}).get("exclude")
-                   for step in self.s.get("steps", []))
 
     def _on_event(self, ev) -> None:
         self.events.append(ev)

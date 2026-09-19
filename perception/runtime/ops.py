@@ -11,11 +11,12 @@ a new operation does not supersede a pending one, it queues behind it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from contracts import BehaviorSpec
 
-OpKind = Literal["add_behavior", "remove_behavior", "clear", "set_model"]
+OpKind = Literal["add_behavior", "remove_behavior", "clear", "set_model",
+                 "add_reference"]
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,10 @@ class Op:
     behavior_id: str | None = None
     spec: BehaviorSpec | None = None
     model: str | None = None
+    ref_id: str | None = None
+    image: Any = None          # np.ndarray, for add_reference
+    vector: Any = None         # a pre-computed embedding, for "that one there"
+    label: str | None = None
 
     def describe(self) -> str:
         target = self.model or self.behavior_id or "all"

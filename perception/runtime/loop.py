@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -93,6 +94,9 @@ class InferenceLoop:
         #: normalized; review tools need the pixels.
         self.last_tracks: sv.Detections | None = None
         self.hud_text: str | None = None
+        #: event id -> JPEG. Served by /snapshots/{id}.jpg so the agent can
+        #: look at what fired. Bounded: a live stream never ends.
+        self.snapshots: OrderedDict[str, bytes] = OrderedDict()
         self._last_seq = -1
         self._last_publish = 0.0
         self._stop = threading.Event()
@@ -141,6 +145,7 @@ class InferenceLoop:
         if out.reset_tracking:
             self.shared.reset(f"model -> {world.model_name}")
         self.shared.bank.set_texts(world.text_vectors, world.baseline_vectors)
+        self.shared.bank.set_references(world.ref_vectors)
         self.world = world
         log.info("applied %s -> %s in %.0fms", out.op.describe(), world.summary(),
                  out.seconds * 1000)
@@ -200,6 +205,8 @@ class InferenceLoop:
                 b.to("FAILED", str(exc))
                 continue
             layers.extend(outcome.layers)
+            for event_id, crop in outcome.snapshots:
+                self._keep_snapshot(event_id, crop)
             for ev in outcome.events:
                 self.event_bus.publish(ev)
             # Only the most recently started behaviour steers, so starting a
@@ -207,6 +214,16 @@ class InferenceLoop:
             if outcome.motor is not None and b.started > motor_started:
                 motor, motor_started = outcome.motor, b.started
         return layers, motor
+
+    def _keep_snapshot(self, event_id: str, crop: np.ndarray, limit: int = 64) -> None:
+        import cv2
+
+        ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if not ok:
+            return
+        self.snapshots[event_id] = buf.tobytes()
+        while len(self.snapshots) > limit:
+            self.snapshots.popitem(last=False)
 
     def _detect_and_track(self, frame: np.ndarray, now: float) -> sv.Detections | None:
         try:
@@ -249,6 +266,8 @@ class InferenceLoop:
             ts=now, model=self.model_name, fps=self.timings.fps,
             camera_ok=self.health.camera_ok, hud=self.hud_text,
             behaviors=[b.view() for b in self.behaviors.values()], tracks=tracks,
+            refs=list(getattr(self.builder, "references", []).ids())
+            if hasattr(getattr(self.builder, "references", None), "ids") else [],
         )
 
     def _camera_down(self, now: float) -> StateView | None:

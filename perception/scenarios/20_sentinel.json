@@ -1,0 +1,83 @@
+{
+  "name": "sentinel: guard the duck",
+  "clip": "clips/passer.mp4",
+  "model": "yoloe",
+  "duration_s": 18,
+  "steps": [
+    {
+      "at": 1.0,
+      "add": {
+        "kind": "watch",
+        "render": {
+          "label": "guard the duck",
+          "color": "#FFD400"
+        },
+        "subject": {
+          "detect": [
+            "yellow rubber duck"
+          ]
+        },
+        "params": {
+          "cooldown_s": 3.0,
+          "triggers": [
+            {
+              "type": "near",
+              "other": {
+                "detect": [
+                  "person"
+                ]
+              },
+              "margin": 0.15
+            },
+            {
+              "type": "missing",
+              "after_s": 2.0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at": 1.2,
+      "add": {
+        "kind": "count_line",
+        "render": {
+          "label": "doorway"
+        },
+        "subject": {
+          "detect": [
+            "person"
+          ]
+        },
+        "params": {
+          "line": [
+            [
+              0.4,
+              0.0
+            ],
+            [
+              0.4,
+              1.0
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "expect": {
+    "b1": {
+      "reaches": "ARMED",
+      "events": [
+        "armed",
+        "missing"
+      ]
+    },
+    "b2": {
+      "reaches": "ACTIVE",
+      "events": [
+        "crossed"
+      ]
+    }
+  },
+  "_note": "near is exercised in tests/test_watch.py: this clip never has the person and the duck detected together for long enough to arm."
+}

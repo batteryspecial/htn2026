@@ -9,8 +9,11 @@ silently, when it asks for something that does not exist.
 from __future__ import annotations
 
 from behaviors.base import Behavior, UnsupportedBehavior
+from behaviors.count_line import CountLine
 from behaviors.highlight import Highlight
+from behaviors.privacy import Privacy
 from behaviors.track import Track
+from behaviors.watch import Watch
 from contracts import BehaviorSpec
 
 
@@ -21,24 +24,6 @@ class NotYetBuilt(Behavior):
         raise UnsupportedBehavior(
             f"behaviour kind {self.spec.kind!r} is not implemented yet "
             f"({self.needs}). Available now: {sorted(BUILT)}")
-
-
-class Watch(NotYetBuilt):
-    kind = "watch"
-    states = ("ARMING", "ARMED", "FIRED", "COOLDOWN", "PAUSED")
-    needs = "needs proximity triggers and snapshot capture"
-
-
-class CountLine(NotYetBuilt):
-    kind = "count_line"
-    states = ("ACTIVE", "PAUSED")
-    needs = "needs line-crossing geometry"
-
-
-class Privacy(NotYetBuilt):
-    kind = "privacy"
-    states = ("ACTIVE", "PAUSED")
-    needs = "needs reference matching"
 
 
 class PanTo(NotYetBuilt):

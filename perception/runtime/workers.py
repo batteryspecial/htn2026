@@ -36,6 +36,7 @@ from runtime.ops import (
     Outcome,
     Rejected,
 )
+from attributes.references import ReferenceStore
 from runtime.world import World
 
 log = logging.getLogger("perception.workers")
@@ -49,9 +50,13 @@ class Builder:
         #: CLIP, or None to run with attributes disabled. Text encoding happens
         #: on this thread so the loop never pays for it.
         self.encoder = encoder
+        self.references_encoder_set = False
         #: The worker's own copy. The loop has the installed one; this is what
         #: the next operation is applied to.
         self.world: World | None = None
+        #: Registered reference images. Written here, read by the API for
+        #: thumbnails and by the world for matching.
+        self.references = ReferenceStore()
         self._q: queue.Queue[Op] = queue.Queue()
         self._out: queue.Queue[Outcome] = queue.Queue()
         self._seq = itertools.count(1)
@@ -59,6 +64,7 @@ class Builder:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._inflight = 0
         self.applied_count = 0
 
     # 1. Submitting ------------------------------------------------------
@@ -66,6 +72,7 @@ class Builder:
         with self._lock:
             op = Op(kind=op.kind, seq=next(self._seq), behavior_id=op.behavior_id,
                     spec=op.spec, model=op.model)
+            self._inflight += 1
             self._out.put(Accepted(op))
             self._q.put(op)
         return op
@@ -85,6 +92,27 @@ class Builder:
 
     def set_model(self, model: str) -> Op:
         return self._submit(Op("set_model", model=model))
+
+    def add_reference(self, image=None, vector=None, label: str | None = None) -> str:
+        """Register a reference. Returns the id at once; encoding happens on
+        the worker, because it is a CLIP forward pass."""
+        import uuid
+
+        ref_id = f"r{uuid.uuid4().hex[:8]}"
+        self._submit(Op("add_reference", ref_id=ref_id, image=image,
+                        vector=vector, label=label))
+        return ref_id
+
+    @property
+    def idle(self) -> bool:
+        """Nothing queued and nothing being built.
+
+        Distinct from "the queue is empty": an op that has been picked up but
+        not finished leaves the queue empty while the world is still the old
+        one, and anything waiting on the queue alone would run ahead of it.
+        """
+        with self._lock:
+            return self._inflight == 0 and self._q.empty()
 
     # 2. Draining --------------------------------------------------------
     def poll(self) -> list[Outcome]:
@@ -118,6 +146,9 @@ class Builder:
             except Exception as exc:  # a dead worker takes the demo with it
                 log.exception("builder failed on %s", op.describe())
                 self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+            finally:
+                with self._lock:
+                    self._inflight -= 1
 
     def _process(self, op: Op) -> None:
         started = time.perf_counter()
@@ -146,6 +177,12 @@ class Builder:
                 self._out.put(Rejected(op, f"already using {op.model!r}"))
                 return
             model, reset = op.model, True
+        elif op.kind == "add_reference":
+            try:
+                self._register(op)
+            except Exception as exc:
+                self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+                return
 
         try:
             world = self._assemble(op, model, behaviors)
@@ -157,6 +194,20 @@ class Builder:
         self.world = world
         self.applied_count += 1
         self._out.put(Applied(op, world, time.perf_counter() - started, reset_tracking=reset))
+
+    def _register(self, op: Op) -> None:
+        """Encode an uploaded photo, or store an embedding taken from a frame."""
+        self.references.encoder = self.encoder
+        if op.vector is not None:
+            ref = self.references.add_vector(op.vector, op.label)
+        else:
+            if self.encoder is None:
+                raise RuntimeError("references need CLIP loaded")
+            ref = self.references.add_image(op.image, op.label)
+        # The id was handed to the caller already, so keep it.
+        self.references.items.pop(ref.ref_id, None)
+        ref.ref_id = op.ref_id
+        self.references.items[op.ref_id] = ref
 
     def _assemble(self, op: Op, model: str, behaviors: dict[str, Behavior]) -> World:
         if not self.registry.is_loaded(model):
@@ -179,7 +230,9 @@ class Builder:
 
         texts, baselines = self._encode(active)
         world = World(model_name=model, detector=detector, prepared=prepared,
-                      behaviors=behaviors, text_vectors=texts, baseline_vectors=baselines)
+                      behaviors=behaviors, text_vectors=texts,
+                      baseline_vectors=baselines,
+                      ref_vectors=self.references.vectors())
         world.revalidate()
         return world
 

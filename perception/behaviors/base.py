@@ -82,6 +82,9 @@ class Outcome:
     events: list[Event] = field(default_factory=list)
     layers: list[Layer] = field(default_factory=list)
     motor: Any = None              # MotorCommand, when this behaviour drives
+    #: (event_id, crop) pairs. The loop encodes and stores them, so the agent
+    #: can look at what fired instead of asking a follow-up question.
+    snapshots: list[tuple[str, np.ndarray]] = field(default_factory=list)
 
 
 class Behavior:
@@ -202,15 +205,24 @@ class Behavior:
     def on_frame(self, frame: Frame, idx: np.ndarray, outcome: Outcome) -> None:
         """Kind-specific work. `idx` indexes the tracks matching this subject."""
 
-    def filter(self, frame: Frame) -> np.ndarray:
-        """Indices of the tracks that count as this behaviour's subject.
+    def selectors(self) -> list:
+        """Every selector this behaviour uses.
+
+        The subject, plus any inside `params` — a `near` trigger names a second
+        thing, and the detector has to be prepared for it or the trigger can
+        never fire. The world unions over this, not over `subject` alone.
+        """
+        return [self.subject]
+
+    def filter(self, frame: Frame, selector=None) -> np.ndarray:
+        """Indices of the tracks matching a selector, the subject by default.
 
         Class first because it is free, then the cached attribute verdicts. A
         track whose appearance has not been scored yet is excluded rather than
         assumed to match: acting on an unverified track is how a privacy blur
         misses a face.
         """
-        tracks, subject = frame.tracks, self.subject
+        tracks, subject = frame.tracks, selector or self.subject
         if len(tracks) == 0:
             return np.array([], dtype=int)
 
@@ -235,16 +247,17 @@ class Behavior:
                 continue
             keep.append(i)
         if subject.relate:
-            keep = self._contained(tracks, keep, names)
+            keep = self._contained(tracks, keep, names, subject)
         return np.array(keep, dtype=int)
 
-    def _contained(self, tracks: sv.Detections, keep: list[int], names) -> list[int]:
+    def _contained(self, tracks: sv.Detections, keep: list[int], names,
+                   subject=None) -> list[int]:
         """Keep only subjects containing the related class low inside them.
 
         "the person in red shoes" is a person box with a shoe box near its
         bottom, which is steadier than asking CLIP about a whole-body crop.
         """
-        rel = self.subject.relate
+        rel = (subject or self.subject).relate
         if names is None:
             return keep
         inner = [i for i in range(len(tracks)) if str(names[i]) == rel.contains]

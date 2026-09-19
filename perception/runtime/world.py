@@ -41,6 +41,7 @@ class World:
     behaviors: dict[str, Behavior] = field(default_factory=dict)
     text_vectors: dict[str, Any] = field(default_factory=dict)
     baseline_vectors: dict[str, Any] = field(default_factory=dict)
+    ref_vectors: dict[str, Any] = field(default_factory=dict)
     created_ts: float = field(default_factory=time.time)
 
     @staticmethod
@@ -52,18 +53,20 @@ class World:
         """
         names: list[str] = []
         for b in behaviors:
-            for n in b.subject.prompts():
-                if n not in names:
-                    names.append(n)
+            for sel in b.selectors():
+                for n in sel.prompts():
+                    if n not in names:
+                        names.append(n)
         return names
 
     @staticmethod
     def attribute_texts(behaviors) -> list[str]:
         texts: list[str] = []
         for b in behaviors:
-            for t in b.subject.attribute_texts():
-                if t not in texts:
-                    texts.append(t)
+            for sel in b.selectors():
+                for t in sel.attribute_texts():
+                    if t not in texts:
+                        texts.append(t)
         return texts
 
     def revalidate(self) -> list[str]:
@@ -76,8 +79,9 @@ class World:
         vocab = self.detector.classes
         changed = []
         for b in self.behaviors.values():
+            wanted = [c for sel in b.selectors() for c in sel.prompts()]
             missing = [] if vocab is None else [
-                c for c in b.subject.prompts() if c not in set(vocab)]
+                c for c in wanted if c not in set(vocab)]
             if missing and b.state != "PAUSED":
                 b.pause(f"{self.model_name} cannot detect {missing}")
                 changed.append(b.id)

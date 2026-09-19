@@ -19,9 +19,10 @@ import logging
 import statistics
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from behaviors.kinds import BUILT, KINDS
@@ -59,7 +60,6 @@ class Service:
     health: Health
     events: Bus
     states: Bus
-    snapshots: dict[str, bytes] = field(default_factory=dict)
 
     def start(self) -> None:
         self.capture.start()
@@ -88,6 +88,14 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
                 svc.stop()
 
     app = FastAPI(title="perception", lifespan=lifespan)
+    # The operator UI is served from somewhere else entirely: a file:// page, a
+    # static host, or another laptop. Everything here is read-mostly control of
+    # a camera on a LAN for one demo, so the permissive setting is the honest
+    # one rather than a guess at the right origin on the day.
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_credentials=False,
+        allow_methods=["*"], allow_headers=["*"],
+    )
     from server.stream import Streamer
 
     streamer = Streamer(svc.loop)
@@ -102,7 +110,7 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         if spec.kind not in BUILT:
             return _reject(f"behaviour kind {spec.kind!r} is not implemented yet; "
                            f"available: {sorted(BUILT)}")
-        bad = _vocab_error(svc, spec)
+        bad = _vocab_error(svc, spec) or _params_error(spec)
         if bad:
             return _reject(bad)
         return BehaviorCreated(id=svc.builder.add_behavior(spec))
@@ -127,6 +135,57 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
     async def clear_behaviors():
         svc.builder.clear()
         return {"cleared": True}
+
+    # 1b. Legacy TaskSpec intake ------------------------------------------
+    @app.post("/spec", status_code=202)
+    async def post_spec(body: dict):
+        """Accept a TaskSpec from the frontend's compiler.
+
+        The old contract meant "this is the whole objective now", so applying
+        one replaces every running behaviour. Translated at the edge; nothing
+        downstream knows this shape exists.
+        """
+        from server.legacy import to_behaviors
+
+        spec = body.get("spec") or body
+        instruction_id = body.get("instruction_id")
+        try:
+            behaviors, notes = to_behaviors(spec)
+        except Exception as exc:
+            return _reject(f"could not read that TaskSpec: {exc}")
+
+        for b in behaviors:
+            bad = _vocab_error(svc, b)
+            if bad:
+                return _reject(bad)
+
+        svc.builder.clear()
+        ids = [svc.builder.add_behavior(b) for b in behaviors]
+        log.info("legacy TaskSpec %s -> behaviours %s", spec.get("spec_id"), ids)
+        return {"accepted": True, "instruction_id": instruction_id,
+                "spec_id": spec.get("spec_id"), "behavior_ids": ids, "notes": notes}
+
+    @app.websocket("/ws/status")
+    async def ws_status(ws: WebSocket):
+        """Legacy stage stream: the same events, in the old vocabulary.
+
+        Only events with an old equivalent are forwarded. Inventing stage names
+        for the rest would put unknown entries on the frontend's strip; they
+        stay available in full on /ws/events.
+        """
+        from server.legacy import to_stage
+
+        await ws.accept()
+        stream = svc.events.stream(replay=True)
+        try:
+            async for item in stream:
+                staged = to_stage(item) if hasattr(item, "type") else None
+                if staged:
+                    await ws.send_json(staged)
+        except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+            pass
+        finally:
+            await stream.aclose()
 
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
@@ -198,10 +257,54 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
     @app.get("/snapshots/{event_id}.jpg")
     async def event_snapshot(event_id: str):
-        data = svc.snapshots.get(event_id)
+        data = svc.loop.snapshots.get(event_id)
         if not data:
             return JSONResponse(status_code=404, content={"detail": "no such snapshot"})
         return Response(content=data, media_type="image/jpeg")
+
+    # 4b. References ------------------------------------------------------
+    @app.post("/references", status_code=201)
+    async def add_reference(file: UploadFile | None = File(default=None),
+                            label: str | None = Form(default=None),
+                            body: dict | None = None):
+        """Register an appearance to match against: "track *that* one".
+
+        Either an uploaded photo, or `{"from": "largest_person"}` to take the
+        biggest thing on screen right now, which is how "follow him" works
+        with nothing to upload.
+        """
+        import cv2
+        import numpy as np
+
+        if file is not None:
+            raw = np.frombuffer(await file.read(), np.uint8)
+            image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+            if image is None:
+                return _reject("could not decode that image")
+            ref_id = svc.builder.add_reference(image=image, label=label or file.filename)
+            return {"ref_id": ref_id, "thumb_url": f"/references/{ref_id}.jpg"}
+
+        source = (body or {}).get("from", "largest_person")
+        vector, detail = _embedding_from_frame(svc, source)
+        if vector is None:
+            return _reject(detail)
+        ref_id = svc.builder.add_reference(vector=vector, label=label or source)
+        return {"ref_id": ref_id, "thumb_url": f"/references/{ref_id}.jpg"}
+
+    @app.get("/references")
+    async def list_references():
+        store = svc.builder.references
+        return {"references": [
+            {"ref_id": r.ref_id, "label": r.label,
+             "thumb_url": f"/references/{r.ref_id}.jpg"}
+            for r in store.items.values()]}
+
+    @app.get("/references/{ref_id}.jpg")
+    async def reference_thumb(ref_id: str):
+        ref = svc.builder.references.items.get(ref_id)
+        if ref is None or ref.thumb is None:
+            return JSONResponse(status_code=404, content={"detail": "no such reference"})
+        return Response(content=ref.thumb, media_type="image/jpeg")
 
     # 5. Live channels ----------------------------------------------------
     @app.websocket("/ws/state")
@@ -249,6 +352,51 @@ async def _sample(svc: Service, selector, window_s: float) -> list[int]:
             counts.append(sum(1 for t in state.tracks if t.label in wanted))
         await asyncio.sleep(0.02)
     return counts
+
+
+def _embedding_from_frame(svc: Service, source: str):
+    """Take an appearance straight off the current frame.
+
+    The embedding already exists: the attribute cache computes one per track
+    for re-identification, so "that one there" costs a lookup, not a model
+    call.
+    """
+    tracks = svc.loop.last_tracks
+    if tracks is None or len(tracks) == 0:
+        return None, "nothing on screen to reference"
+    wanted = source.replace("largest_", "").replace("_", " ")
+    names = tracks.data.get("class_name")
+    idx = [i for i in range(len(tracks))
+           if names is None or wanted in ("", str(names[i]))]
+    if not idx:
+        return None, f"nothing matching {wanted!r} on screen"
+    import numpy as np
+
+    best = int(max(idx, key=lambda i: float(tracks.box_area[i])))
+    ids = tracks.tracker_id
+    if ids is None:
+        return None, "tracks have no ids yet"
+    entry = svc.loop.shared.bank.get(int(ids[best]))
+    if entry is None or entry.embedding is None:
+        return None, "that track has not been scored yet; is CLIP loaded?"
+    return np.asarray(entry.embedding), ""
+
+
+def _params_error(spec: BehaviorSpec) -> str | None:
+    """Check kind-specific params up front by building the behaviour and
+    throwing it away.
+
+    Construction is pure and costs microseconds, and without this a malformed
+    `params` is accepted with a 201 and only fails later as an event. An agent
+    that has to notice an event to learn its call was wrong will not notice.
+    """
+    from behaviors.kinds import build
+
+    try:
+        build("preflight", spec)
+    except Exception as exc:
+        return str(exc)
+    return None
 
 
 def _vocab_error(svc: Service, spec: BehaviorSpec) -> str | None:

@@ -1,0 +1,52 @@
+{
+  "name": "target leaves frame",
+  "clip": "clips/passer.mp4",
+  "model": "yoloe",
+  "duration_s": 20,
+  "steps": [
+    {
+      "at": 1.0,
+      "add": {
+        "kind": "track",
+        "render": {
+          "label": "follow me",
+          "trail": true
+        },
+        "subject": {
+          "detect": [
+            "person"
+          ],
+          "pick": "ref"
+        }
+      }
+    },
+    {
+      "at": 1.2,
+      "add": {
+        "kind": "highlight",
+        "render": {
+          "label": "duck"
+        },
+        "subject": {
+          "detect": [
+            "yellow rubber duck"
+          ]
+        }
+      }
+    }
+  ],
+  "expect": {
+    "b1": {
+      "reaches": "TRACKING",
+      "acquire_under_ms": 2500,
+      "events": [
+        "acquired",
+        "lost"
+      ]
+    },
+    "b2": {
+      "reaches": "ACTIVE",
+      "min_matches": 1
+    }
+  }
+}
