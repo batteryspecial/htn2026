@@ -14,12 +14,14 @@ import logging
 
 from config import CFG, resolve_device, setup_logging
 from detectors.registry import Registry
+from runtime.builder import Builder
 from runtime.capture import Capture
 from runtime.events import make_buses
-from runtime.loader import Loader
 from runtime.loop import InferenceLoop
 from runtime.state import Machine
+from runtime.world import Shared
 from server.api import Service, create_app
+from stages.encoders import ClipEncoder
 
 log = logging.getLogger("perception.main")
 
@@ -34,8 +36,18 @@ def build() -> Service:
     if failed:
         log.warning("models failed to preload: %s", failed)
 
-    events, targets = make_buses()
+    events, states = make_buses()
     machine = Machine(emit=events.publish)
+
+    # CLIP is optional: without it, behaviours with no attributes still work
+    # and ones that need attributes simply never match. Better than refusing
+    # to start.
+    encoder = ClipEncoder()
+    try:
+        encoder.load()
+    except Exception as exc:
+        log.warning("CLIP unavailable, attributes disabled: %s", exc)
+        encoder = None
 
     # The service comes up even with no usable detector: it reports FAULT
     # rather than refusing to start, so the operator can see what is wrong.
@@ -45,10 +57,21 @@ def build() -> Service:
         machine.on_boot_failed(f"no model loaded; failed: {failed}")
 
     capture = Capture()
-    loader = Loader(registry)
-    loop = InferenceLoop(capture, loader, machine, targets, events)
-    return Service(registry=registry, capture=capture, loader=loader, loop=loop,
-                   machine=machine, events=events, targets=targets)
+    builder = Builder(registry, default_model=_default_model(registry), encoder=encoder)
+    shared = Shared()
+    shared.bank.encoder = encoder
+    loop = InferenceLoop(capture, builder, machine, states, events, shared)
+    return Service(registry=registry, capture=capture, builder=builder, loop=loop,
+                   machine=machine, events=events, states=states)
+
+
+def _default_model(registry: Registry) -> str:
+    """Prefer an open-vocabulary model: the agent invents class names."""
+    loaded = [m for m in registry.manifest() if m["loaded"]]
+    for m in loaded:
+        if m["open_vocab"]:
+            return m["name"]
+    return loaded[0]["name"] if loaded else "yoloe"
 
 
 app = create_app(build())

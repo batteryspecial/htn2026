@@ -1,12 +1,15 @@
 """The annotated MJPEG feed.
 
 Annotation and JPEG encoding happen once per frame and are shared by every
-viewer, so opening a second browser tab costs nothing. The feed is also
-throttled well below the inference rate: the operator cannot see 60fps and the
-inference loop should not be paying for pixels nobody looks at.
+viewer, so a second browser tab costs nothing. The feed is throttled well below
+the inference rate: nobody can see 60fps and the loop should not pay for pixels
+nobody looks at.
 
-This never blocks the inference loop. It reads the loop's latest published
-view; if it is busy or slow, the worst case is a stale frame on screen.
+Never blocks the loop. It reads the loop's last published view; if the loop is
+busy the worst case is a stale frame on screen.
+
+Each behaviour gets its own colour, so a frame with a counter and a follow-cam
+running at once is readable rather than a pile of boxes.
 """
 
 from __future__ import annotations
@@ -26,8 +29,7 @@ log = logging.getLogger("perception.stream")
 
 BOUNDARY = b"--frame"
 
-# Phase colours, chosen so "is the car allowed to move" is readable across a
-# room: green only in TRACKING, red for anything broken.
+# Phase colours, readable across a room.
 PHASE_BGR = {
     Phase.TRACKING: (80, 220, 80),
     Phase.ACQUIRING: (60, 200, 250),
@@ -38,13 +40,14 @@ PHASE_BGR = {
     Phase.FAULT: (70, 70, 240),
 }
 DIM = (160, 160, 160)
+# One colour per behaviour, assigned in order.
+PALETTE = [(90, 220, 90), (250, 190, 60), (200, 120, 250), (80, 210, 250), (250, 130, 130)]
 
 
 class Streamer:
     def __init__(self, loop: InferenceLoop) -> None:
         self.loop = loop
-        self.box = sv.BoxAnnotator(thickness=2)
-        self.label = sv.LabelAnnotator(text_scale=0.5, text_thickness=1)
+        self.label = sv.LabelAnnotator(text_scale=0.45, text_thickness=1)
         self._jpeg: bytes | None = None
         self._seq = -1
         self._at = 0.0
@@ -55,13 +58,12 @@ class Streamer:
         """Latest annotated frame, re-encoded at most STREAM_FPS times a second."""
         now = time.time()
         view = self.loop.view
-        stale = view.seq != self._seq
-        due = now - self._at >= 1.0 / max(CFG.STREAM_FPS, 1.0)
+        stale, due = view.seq != self._seq, now - self._at >= 1.0 / max(CFG.STREAM_FPS, 1.0)
         if self._jpeg is not None and not (stale and due):
             return self._jpeg
 
-        frame = self._render(view)
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, CFG.JPEG_QUALITY])
+        ok, buf = cv2.imencode(".jpg", self._render(view),
+                               [cv2.IMWRITE_JPEG_QUALITY, CFG.JPEG_QUALITY])
         if ok:
             self._jpeg, self._seq, self._at = buf.tobytes(), view.seq, now
             self.encoded += 1
@@ -76,56 +78,77 @@ class Streamer:
         else:
             frame = frame.copy()
 
-        dets = view.detections
-        if dets is not None and len(dets):
-            frame = self.box.annotate(frame, dets)
-            frame = self.label.annotate(frame, dets, labels=self._labels(dets))
-            if view.chosen is not None and view.chosen < len(dets):
-                x1, y1, x2, y2 = dets.xyxy[view.chosen].astype(int)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 220, 80), 4)
+        tracks = view.tracks
+        if tracks is not None and len(tracks):
+            self._draw_unclaimed(frame, tracks, view.outcomes)
+            self._draw_behaviors(frame, tracks, view.outcomes)
+        return self._overlay(frame, view)
 
-        return self._overlay(frame, view.state)
+    # 2. Boxes ----------------------------------------------------------
+    def _draw_unclaimed(self, frame, tracks, outcomes) -> None:
+        """Tracks no behaviour wants, drawn faintly.
+
+        Keeping them visible is what makes an exclusion legible: you can see
+        the person in the black jacket being deliberately ignored.
+        """
+        claimed = {int(i) for o in outcomes.values() for i in o.matches}
+        for i in range(len(tracks)):
+            if i in claimed:
+                continue
+            x1, y1, x2, y2 = tracks.xyxy[i].astype(int)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (110, 110, 110), 1)
+
+    def _draw_behaviors(self, frame, tracks, outcomes) -> None:
+        for n, (bid, outcome) in enumerate(outcomes.items()):
+            colour = PALETTE[n % len(PALETTE)]
+            for i in outcome.matches:
+                x1, y1, x2, y2 = tracks.xyxy[int(i)].astype(int)
+                thick = 4 if outcome.chosen == int(i) else 2
+                cv2.rectangle(frame, (x1, y1), (x2, y2), colour, thick)
+            if len(outcome.matches):
+                labels, subset = self._labels(tracks, outcome.matches), tracks[outcome.matches]
+                self.label.annotate(frame, subset, labels=labels)
 
     @staticmethod
-    def _labels(dets: sv.Detections) -> list[str]:
-        names = dets.data.get("class_name")
-        ids = dets.tracker_id
+    def _labels(tracks, idx) -> list[str]:
+        names, ids = tracks.data.get("class_name"), tracks.tracker_id
         out = []
-        for i in range(len(dets)):
+        for i in idx:
+            i = int(i)
             name = str(names[i]) if names is not None else "?"
             out.append(f"{name}#{ids[i]}" if ids is not None else name)
         return out
 
-    # 2. Overlay -------------------------------------------------------
-    def _overlay(self, frame: np.ndarray, state) -> np.ndarray:
-        """Phase, spec and target readout, so a glance at the feed explains
-        what the car is about to do."""
+    # 3. Overlay --------------------------------------------------------
+    def _overlay(self, frame: np.ndarray, view) -> np.ndarray:
+        """Phase, behaviours and counts, so a glance explains the whole state."""
         h, w = frame.shape[:2]
-        phase = state.phase if state else Phase.BOOTING
-        colour = PHASE_BGR.get(phase, DIM)
+        summary = view.summary
+        phase = summary.phase if summary else Phase.BOOTING
 
         cv2.rectangle(frame, (0, 0), (w, 34), (24, 24, 24), -1)
-        cv2.putText(frame, phase.value, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
-
-        task = self.loop.active
-        if task:
-            cv2.putText(frame, task.summary(), (140, 23), cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(frame, phase.value, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    PHASE_BGR.get(phase, DIM), 2)
+        if summary and summary.model:
+            cv2.putText(frame, summary.model, (150, 23), cv2.FONT_HERSHEY_SIMPLEX,
                         0.5, (210, 210, 210), 1)
-        if state and state.visible:
-            # Own bar, because the readout sits over whatever the camera sees.
-            cv2.rectangle(frame, (0, h - 28), (w, h), (24, 24, 24), -1)
-            txt = (f"{state.label}#{state.track_id}  cx={state.cx:+.2f} "
-                   f"cy={state.cy:+.2f}  area={state.area:.3f}  conf={state.conf:.2f}")
-            cv2.putText(frame, txt, (10, h - 9), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5, (210, 210, 210), 1)
-
         cv2.putText(frame, f"{self.loop.timings.fps:.0f} fps", (w - 80, 23),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (210, 210, 210), 1)
-        # Crosshair: the controller steers to put the target box on this point.
+
+        if summary and summary.behaviors:
+            rows = summary.behaviors[:5]
+            cv2.rectangle(frame, (0, h - 18 * len(rows) - 10), (w, h), (24, 24, 24), -1)
+            for n, b in enumerate(rows):
+                y = h - 18 * (len(rows) - n) + 4
+                colour = PALETTE[n % len(PALETTE)] if b.state == "active" else DIM
+                text = (f"{b.label or b.kind}  {b.state}  x{b.matches}"
+                        + (f"  {b.detail}" if b.detail else ""))
+                cv2.putText(frame, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1)
+
         cv2.drawMarker(frame, (w // 2, h // 2), DIM, cv2.MARKER_CROSS, 18, 1)
         return frame
 
-    # 3. Serving -------------------------------------------------------
+    # 4. Serving --------------------------------------------------------
     async def mjpeg(self):
         import asyncio
 

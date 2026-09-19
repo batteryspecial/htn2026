@@ -1,171 +1,203 @@
 # CLAUDE.md — perception (owner: Qinkai)
 
-You are Qinkai's coding agent. You work only inside `perception/`. Read this whole file before writing code.
+You are Qinkai's coding agent. Work only inside `perception/`. Read this whole file before writing code. `../STACK_BRIEF.md` has the full system diagram and the demo list.
 
 ## Project
 
-Hack the North 2026, 36-hour hackathon, team of 3. The goal is an impressive live demo, not a production system. Prefer the simplest thing that works on stage.
+Hack the North 2026, ~22 hours left. Pitch: **one camera, many devices.** An agent layer (the orchestrator, owned by a teammate) turns sentences into behaviors. This service executes them every frame, draws the result on the frame, and emits events. Breadth of reliable capabilities wins the demo. Every feature must be a combination of the primitives below; bespoke code is allowed only for skills.
 
-**Product:** natural-language retasking of a robot car's perception. An operator types "follow the person in red shoes." An LLM compiles the instruction into a JSON `TaskSpec`. This pipeline hot-swaps to that spec without restarting, and the car follows the new target. The headline metric is retask time: instruction received → target acquired.
+## Ownership
 
-## Repo layout and ownership
-
-| Folder | Owner | Purpose |
+| Folder | Owner | Port |
 |---|---|---|
-| `perception/` | **Qinkai (you)** | Detection, tracking, target selection, hot-swap state machine. Port 8001 |
-| `orchestrator/` | Danny | Instruction → LLM → TaskSpec → `POST /spec` here; relays status to UI. Port 8000 |
-| `controller/` | Kevin | Reads `TargetState` from here, drives the car. Port 8002 |
-| `frontend/` | Kevin | Operator UI: chat, `/video` feed, status board, E-STOP |
-| `linker/` | all three | Shared Pydantic contracts |
+| `perception/` | **Qinkai (you)** | 8001 |
+| `orchestrator/` (includes frontend) | teammate | 8000 |
+| `camera/` | teammate | 8003 |
+| `linker/` | shared contracts; do not edit without Qinkai's explicit instruction | — |
 
-Never edit files outside `perception/`. Never change `linker/` without an explicit instruction from Qinkai, because the change needs team agreement. If a needed contract field isn't in `linker/` yet, mirror it in `perception/contracts.py` and flag it in your reply.
+## Hardware reality
 
-## Hardware reality (important)
+- **You run on a MacBook**: CPU or MPS only; no CUDA, no TensorRT.
+- **Inference runs on an RTX 4070 (12 GB, CUDA)** on a friend's PC, likely under WSL2. Qinkai deploys with `git pull` and a restart.
+- **No motor for now.** A webcam feeds the camera service. The "motor" is a virtual actuator that draws guidance arrows for a human to pan the camera. A stepper via Arduino may arrive later behind the same `Actuator` interface.
+- Device selection always goes through `config.DEVICE` (auto → cuda → mps → cpu). Never hardcode `"cuda"`. GPU-only paths are guarded; missing backends mark registry entries `available: false`, and the process still boots.
+- Mac settings: `PYTORCH_ENABLE_MPS_FALLBACK=1`, `IMGSZ=320`. All logic must be testable on the Mac with looping clips in `clips/`.
+- `.pt`, `.engine`, and `.pth` files are gitignored. Use `pathlib` everywhere.
 
-- **You run on a MacBook.** No CUDA, no TensorRT. You can run code on CPU or MPS only.
-- **Inference runs on a different machine:** a friend's PC with an **RTX 4070 (12 GB, Ada, CUDA)**, probably in WSL2 Ubuntu. Qinkai deploys there with `git pull` and a restart.
-- Therefore:
-  - All device selection goes through `config.DEVICE` (`auto` → cuda → mps → cpu). Never hardcode `"cuda"`.
-  - GPU-only paths (TensorRT engines, `half=True`) must be guarded and must degrade gracefully. Registry entries whose backend is unavailable are marked `available: false`, and the process still boots.
-  - `.engine` files are specific to one GPU architecture and TensorRT version. They are built on the 4070 by `scripts/build_engines.py`. Never build or commit them from the Mac. `.engine` and `.pt` are gitignored.
-  - On the Mac, set `PYTORCH_ENABLE_MPS_FALLBACK=1` and use `IMGSZ=320` for speed.
-  - Use `pathlib` everywhere. The host may be Windows or WSL.
-- Every piece of logic must be testable on the Mac against a recorded clip (`VIDEO_SOURCE=clips/x.mp4`, looping).
+## Architecture rules
 
-## Critical design decision
+1. **Single writer.** Only the frame loop mutates behaviors, the active model, trackers, and state. The API enqueues ops; the loop drains the ops queue at the top of each frame.
+2. **Never block the loop.** Model loading, OCR, and reference embedding run in a worker pool. Results come back through a queue and apply on a later frame.
+3. **Latest frame only.** The capture thread overwrites a single slot.
+4. **Validate before enqueue.** A bad spec returns 422 with a human-readable reason. The agent reads that reason and retries, so make it specific ("label 'duck' is not in rfdetr vocabulary").
+5. **Declarative rendering.** Behaviors emit render layers; one renderer composes them. No drawing code outside `render/`.
 
-YOLOE exported to TensorRT bakes in its prompt vocabulary. That kills open-vocab swapping. So:
-- **YOLOE runs in PyTorch** (fp16 on CUDA). Open vocab, swapped with `set_classes`.
-- **Fixed-vocab models** (YOLO11-COCO, RF-DETR) may run as TensorRT engines.
-
-## Architecture
+## Frame loop
 
 ```
-capture thread ──latest frame only──▶ inference loop ──▶ /ws/target (TargetState) + /video (MJPEG)
-                                          ▲
-loader worker (1 thread) ──PreparedTask──▶ pending slot ──swapped at top of next frame
-FastAPI (asyncio) ── /spec, /models, /health, /ws/events
+1. grab latest frame (camera service stream or webcam index)
+2. drain ops queue: add/remove behaviors, switch model, apply finished worker results
+3. DETECT with active model
+     open vocab (yoloe): prompts = union of all active selectors' detect lists (re-set only when the union changes)
+     fixed vocab (rfdetr): full vocab, filtered to requested labels
+4. TRACK: supervision.ByteTrack over all detections
+5. ATTRIBUTES: CLIP embedding per new track, refreshed at 1 Hz; score include/exclude texts; ref similarity
+6. BEHAVIORS: each evaluates its selector → subjects, updates its state machine → events, render layers, actuator cmds
+7. SKILLS: apply latest async results (keyboard homography, pose keypoints)
+8. ACTUATOR: primary track/pan_to behavior → virtual motor → arrow layer
+9. RENDER: compose layers + HUD → JPEG → /video
+10. publish events (/ws/events) and state (/state)
 ```
 
-Rules:
-1. **Single writer.** Only the inference loop mutates the active task, detector state, and phase. Other threads communicate through the pending slot and a thread-safe event queue.
-2. **Never block the inference loop.** Model loading, text embedding, and CLIP text encoding happen in the loader worker. Exception: YOLOE `set_classes(names, text_pe)` mutates the model, so it runs in the loop at swap time. It's cheap because `text_pe` was precomputed by the worker via `model.get_text_pe(names)`.
-3. **Latest frame only.** The capture thread overwrites a single slot. Set `CAP_PROP_BUFFERSIZE=1` on network streams.
-4. **Atomic swap.** The old task stays active until a `PreparedTask` is complete. A failed prepare is a no-op: emit `failed`, revert the phase, keep running the old task.
-5. **Newest spec wins.** A new spec during prepare replaces the pending job. The superseded instruction gets `failed` with detail `superseded`.
-6. **Events vs phase.** Events are edge-triggered and meant for humans (via the orchestrator). Phase is level-triggered and meant for the controller (on every `TargetState`).
+Target: 25–30 fps at 720p input, 640 px detector size on the 4070.
 
-## Per-frame stages
+## Models (`models.yaml`, preload all available at boot)
 
-1. **Detect.** The active detector returns `supervision.Detections` with class names in `data["class_name"]`. With two targets, detect on the union of both prompt lists.
-2. **Track.** `supervision.ByteTrack`, a fresh instance per `PreparedTask`.
-3. **Verify.** open_clip ViT-B-32. Contrastive: softmax over [`verify.text`, f"a {cls}"] × 100; keep if p ≥ `verify.min_score` (default 0.6 in practice). Cache per `track_id`, re-verify every 1 s. Batch crops, cap at 16.
-4. **Relate.** Keep tracks of `relate.keep` that contain a (verified) `if_contains` box whose center lies in the keep-box's lower 40%.
-5. **Select.** `largest` | `most_centered` | `highest_conf` | `locked`. `locked` picks via `largest` first, then stores a CLIP image embedding. It prefers the same `track_id`; after ID loss, it adopts a candidate with cosine > 0.8. The embedding updates by EMA (α = 0.1) only when conf > 0.6.
-6. **Arbitrate.** An active-target pointer flips every `arbitration.alternate_s`. It flips early if the active target has been missing > 1 s while the other is visible.
-7. **Publish.** One `TargetState` per frame. Annotated JPEG (supervision annotators, overlay shows phase + spec summary) to `/video` at ~15 fps.
+| Name | Role | Notes |
+|---|---|---|
+| `yoloe` | Default detector, open vocab, masks | `YOLOE("yoloe-11s-seg.pt")`; `set_classes(names, get_text_pe(names))` in the loop, only when the prompt union changes |
+| `rfdetr` | Fixed-vocab detector (COCO) — demo #16 | `rfdetr` package, e.g. `RFDETRBase()`; `predict()` takes RGB (convert from BGR) and returns `sv.Detections`; map class IDs through the package's COCO class table (verify the indexing) |
+| `pose` | Aux model for `pose_trigger` — demo #11 | `yolo11n-pose.pt`; runs only while a pose behavior is active |
+| `clip` | Attributes + reference embeddings | open_clip ViT-B-32; DINOv2 is the upgrade if reference matching is weak |
+| `ocr` | Aux model for the keyboard skill — demo #17 | EasyOCR, English, letter allowlist; worker thread only |
 
-## Detector interface
+**Model switch** (`POST /model`): flip at a frame boundary (preloaded). Then re-validate every behavior. A behavior whose labels are missing from the new vocab goes `PAUSED` with a reason and resumes automatically when a compatible model returns. Emit `model_switched` with the new model and fps, and show the model name in the HUD.
 
-```python
-class Detector(Protocol):
-    name: str
-    open_vocab: bool
-    classes: list[str] | None          # None for open-vocab
-    def prepare(self, prompts: list[str]) -> Any: ...   # worker thread; raises on unknown class
-    def apply(self, prepared: Any) -> None: ...         # loop thread; cheap
-    def infer(self, frame: np.ndarray) -> sv.Detections: ...
-    def warmup(self) -> None: ...
+## Specs
+
+```jsonc
+// Selector
+{
+  "detect": ["person"],                       // yoloe prompts or fixed-vocab labels
+  "include": ["a person wearing a red shirt"],// CLIP; all must pass
+  "exclude": ["a person wearing a black jacket"], // CLIP; any pass drops the track
+  "ref_id": null,                             // appearance match to a registered reference
+  "pick": "all"                               // all | largest | most_centered | ref
+}
+
+// Behavior
+{
+  "kind": "highlight|track|watch|count_line|privacy|pan_to|pose_trigger|keyboard",
+  "subject": { /* Selector */ },
+  "params": { /* per kind, below */ },
+  "render": {"color": "#FFD400", "mask": true, "trail": false, "label": "duck"},
+  "notify": true                              // events wake the agent
+}
 ```
 
-Implementations:
-- `yoloe`: `YOLOE("yoloe-11s-seg.pt")`. `prepare` → `get_text_pe(names)`; `apply` → `set_classes(names, pe)`. Ignore masks.
-- `ultralytics_fixed`: any `YOLO(...)` `.pt` or `.engine` with a fixed class list. `prepare` → map names to IDs (raise on unknown); filter at inference.
-- `rfdetr` (stretch): `rfdetr` package, returns `sv.Detections` natively.
+**CLIP scoring:** contrastive softmax over `[text, f"a {label}"]` × 100; pass at p ≥ 0.6 (tune on clips). Cache per `track_id`.
+**Reference match:** cosine ≥ threshold *and* ≥ 0.05 above the second-best candidate.
 
-The registry is configured in `models.yaml` (name, type, weights, open_vocab, preload, requires_cuda). Preload everything available at boot. Cold load (load + 3 warmups in the worker) is a fallback path.
+## Behavior kinds
 
-## State machine
+| Kind | Params | States | Events | Demo |
+|---|---|---|---|---|
+| `highlight` | — | ACTIVE, PAUSED | `count_changed` | 1, 5, 6, 8, 15 |
+| `track` | `guidance: true` | ACQUIRING → TRACKING ⇄ EDGE → LOST → SEARCHING (10 s); PAUSED | `acquired`, `lost`, `reacquired` | 2, 5, 6, 7, 8 |
+| `watch` | `triggers[]`, `cooldown_s: 5` | ARMING (subject stable 1 s, baseline learned) → ARMED → FIRED → COOLDOWN → ARMED; PAUSED | `armed`, `missing`, `moved`, `near`, `appeared` | 3, 9, 10 |
+| `count_line` | `line: [[x1,y1],[x2,y2]]` normalized (default vertical center) | ACTIVE | `crossed` (in/out counts) | 13 |
+| `privacy` | `keep_ref`, `mode: blur\|pixelate` | ACTIVE | — | 12 |
+| `pan_to` | `deg`, `hfov_deg: 70` | GUIDING → REACHED | `reached` | 4 |
+| `pose_trigger` | `gesture: hand_raised` | ACTIVE | `hand_raised` | 11 |
+| `keyboard` | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
 
-Phases: `BOOTING, IDLE, SWITCHING, LOADING_MODEL, ACQUIRING, TRACKING, LOST, NO_TARGET, FAULT`.
-The controller drives **only** in `TRACKING` with `visible=true`.
+Triggers for `watch`:
+`{"type":"missing","after_s":2}`, `{"type":"moved","min_shift":0.15}`, `{"type":"near","other":Selector,"margin":0.1}`, `{"type":"appeared","other":Selector}`.
+Triggers evaluate per subject track. "Authorized" (#10) is expressed as `exclude` on the `other` selector, the same mechanism as #3.
 
-| From | Trigger | To | Event |
-|---|---|---|---|
-| BOOTING | registry ready | IDLE | — |
-| BOOTING | yoloe fails to load | FAULT | — |
-| any running | valid spec received | SWITCHING | — |
-| SWITCHING | spec model not loaded | LOADING_MODEL | `model_loading` |
-| LOADING_MODEL | load + warmup ok | SWITCHING | `model_loaded` |
-| SWITCHING / LOADING_MODEL | prepare/load error | previous phase | `failed(reason)` |
-| SWITCHING | worker done | SWITCHING | `prepared` |
-| SWITCHING | loop swaps pending task | ACQUIRING | `applied` |
-| ACQUIRING / NO_TARGET | target seen 3 consecutive frames | TRACKING | `active` (once per spec) |
-| ACQUIRING | 3 s timeout | NO_TARGET | `no_target` |
-| TRACKING | target missing 5 frames | LOST | — |
-| LOST | reacquired | TRACKING | — |
-| any | camera dead > 2 s or 3 consecutive inference errors | FAULT | `failed(detail)` |
-| FAULT | recovered | ACQUIRING (spec) / IDLE | — |
-| any running | `DELETE /spec` | IDLE | — |
+**Identity** (track LOST → reacquire): persons use `ref_id` when set; otherwise use the CLIP embedding of the last good crop (cosine > 0.8). Never let a random same-class object clear LOST.
 
-In FAULT, publish heartbeat `TargetState` at 5 Hz with `visible=false`. Implement the machine as a plain enum plus one `transition(new, event=None)` method that logs every transition. No state-machine library.
+## Virtual motor (guidance arrows)
 
-## Contracts (from `linker/`; fields marked NEW are proposed, additive)
+`Actuator` interface: `command(rate_deg_s: float, reason: str)`. `VirtualMotor` renders arrows; a future `StepperMotor` sends to the camera service's `/motor`.
 
-```python
-class TaskSpec:        # spec_id, targets[1..2], mode "follow"|"center", arbitration, model: str (NEW: was Literal["yoloe"])
-class Target:          # ref, detect[1..6], verify?{class,text,min_score}, relate?{keep,if_contains}, select
-class TargetState:     # ts, spec_id, mode "follow"|"center"|"idle", visible, cx, cy, area, conf, label, track_id
-                       # NEW: phase, model, target_ref
-class StatusEvent:     # instruction_id, spec_id, stage, ts, detail, data
-                       # stages from perception: prepared, applied, active, no_target, failed
-                       # NEW: model_loading, model_loaded
+- Only the **primary** behavior drives the actuator: the most recently started `track` or `pan_to`.
+- EDGE (`|cx| > 0.7`): faint arrow toward that edge.
+- LOST: bold pulsing arrow toward the exit edge (from the last velocity), labeled "pan left" or "pan right". Hold until the same identity reacquires.
+- SEARCHING (lost > 10 s): banner "target lost — searching".
+
+## `pan_to` odometry (#4)
+
+Grayscale, downscale to 320 px, `cv2.phaseCorrelate` (or median LK optical flow) between consecutive frames → dx px. `yaw += -dx / width * hfov_deg`. The arrow shows the remaining degrees; within 5° it shows "STOP" and emits `reached`. The agent waits for `reached`, then calls `count`.
+
+## Keyboard skill (#17)
+
+- **OCR worker** (2–4 Hz): EasyOCR on the frame; keep single-character A–Z/0–9 results with conf ≥ 0.5; normalize to lowercase; record each character's center.
+- **Layout template** (QWERTY, key units, relative): number row `1234567890` y = -1, x = -0.5…8.5; `qwertyuiop` y = 0, x = 0…9; `asdfghjkl` y = 1, x = 0.25…8.25; `zxcvbnm` y = 2, x = 0.75…6.75; space ≈ (4.5, 3).
+- **Fit:** `cv2.findHomography(template_pts, image_pts, RANSAC, ~0.5 key width)`. Needs ≥ 6 inliers; with 3–5, fall back to `estimateAffinePartial2D`. EMA-smooth the projected key centers between OCR updates.
+- **Render:** a numbered badge on each key in typing order. Repeated keys list all their numbers (h → `1·7·14`, space → `␣ 5·9`). Draw a path line through the keys in order; in `auto` or `manual` mode, highlight the current step (`POST /behaviors/{id}/advance` for manual).
+- `keyboard_lost` if no successful fit in 2 s.
+
+## Renderer layers (in draw order)
+
+privacy blur → masks → boxes + labels + track IDs → trails → zones/lines → keyboard badges/path → guidance arrows → alert flash border (1 s on trigger) → HUD (model, fps, HUD text, behavior chips with state).
+Colors come from the behavior's `render.color` or a fixed palette by behavior index.
+
+## API (FastAPI, bind 0.0.0.0:8001)
+
+| Method | Path | Body / notes |
+|---|---|---|
+| GET | `/health` | status, fps, model, camera ok |
+| GET | `/state` | behaviors (id, kind, state, spec summary), model, refs, fps |
+| GET | `/models` | name, open_vocab, classes, loaded, available |
+| POST | `/model` | `{name}` |
+| POST | `/behaviors` | Behavior → `{id}`; 422 with reason on failure |
+| DELETE | `/behaviors/{id}` and `/behaviors` | stop one or all |
+| POST | `/behaviors/{id}/advance` | keyboard manual step |
+| POST | `/references` | multipart image, or `{from: "largest_person"}` → `{ref_id, thumb_url}` |
+| POST | `/query/count` | `{selector, window_s: 1}` → median count |
+| POST | `/query/look` | `{selector?}` → detections with labels, attributes, positions |
+| GET | `/snapshot` | current raw JPEG (for the orchestrator's vision model) |
+| GET | `/snapshots/{id}.jpg` | event crops |
+| POST | `/hud` | `{text}` shown in the HUD |
+| GET | `/video` | enriched MJPEG (~15 fps) |
+| WS | `/ws/events` | events |
+
+Event:
+```json
+{"id":"e42","ts":0.0,"behavior_id":"b3","type":"near","detail":"person (track 17) near duck",
+ "data":{},"snapshot_url":"/snapshots/e42.jpg","notify":true}
 ```
+System events use `behavior_id: null`: `model_switched`, `camera_lost`, `camera_ok`.
 
-`cx`, `cy` are in [-1, 1] as offsets from frame center (right and down positive). `area` is bbox area / frame area. `ts` is `time.time()`.
+## Config
 
-## Endpoints (FastAPI, bind 0.0.0.0:8001)
+`VIDEO_SOURCE` (URL | webcam index | file, files loop), `DEVICE`, `IMGSZ`, `PORT=8001`, `MODELS_CONFIG`, `CONF_THRESHOLD=0.25`, `LOG_LEVEL`.
 
-- `POST /spec` `{instruction_id, spec}` → 202; rejects with 422 + `failed` event on schema or vocabulary error
-- `DELETE /spec` → IDLE
-- `GET /models` → registry: name, open_vocab, classes, loaded, available (NEW; the orchestrator builds its manifest from it)
-- `GET /health` → phase, fps, model, spec_id, last_frame_age_ms
-- `WS /ws/target` → TargetState every frame
-- `WS /ws/events` → StatusEvent stream
-- `GET /video` → annotated MJPEG
-
-## Config (env vars, `config.py`)
-
-`VIDEO_SOURCE` (webcam index | file path, loops | URL), `DEVICE` (auto), `IMGSZ` (640; 320 on Mac), `PORT` (8001), `MODELS_CONFIG` (models.yaml), `ACQUIRE_TIMEOUT_S` (3), `CONF_THRESHOLD` (0.25), `LOG_LEVEL`.
-
-## Suggested layout
+## Layout
 
 ```
 perception/
-  main.py            # uvicorn entry, wires threads
-  config.py  contracts.py  models.yaml
-  runtime/   capture.py  loop.py  loader.py  state.py  events.py  task.py
-  detectors/ base.py  yoloe.py  ultralytics_fixed.py  rfdetr.py
-  stages/    verify.py  relate.py  select.py  arbitrate.py
-  server/    api.py  stream.py
-  scripts/   build_engines.py  smoke_test.py  send_spec.sh
-  clips/     (gitignored test videos)
+  main.py  config.py  models.yaml  contracts.py
+  runtime/    capture.py loop.py ops.py workers.py events.py
+  detectors/  base.py yoloe.py rfdetr.py
+  attributes/ clip_cache.py references.py
+  behaviors/  base.py highlight.py track.py watch.py count_line.py privacy.py pan_to.py pose_trigger.py
+  skills/     keyboard.py pose.py
+  actuator/   base.py virtual.py
+  render/     layers.py hud.py
+  server/     api.py stream.py
+  clips/  (gitignored)   tests/
 ```
 
 ## Dependencies
 
-`torch` (CUDA 12.x build on host, default build on Mac), `ultralytics`, `supervision`, `open_clip_torch`, `fastapi`, `uvicorn[standard]`, `opencv-python`, `pydantic>=2`, `pyyaml`, `numpy`. Host only: `tensorrt`. Optional: `rfdetr`.
+`torch`, `ultralytics`, `supervision`, `open_clip_torch`, `rfdetr`, `easyocr`, `opencv-python`, `fastapi`, `uvicorn[standard]`, `python-multipart`, `pydantic>=2`, `pyyaml`, `numpy`.
+
+## Build order
+
+1. Loop, capture, YOLOE, ByteTrack, renderer, `/video`, `highlight` behavior, ops queue, `/behaviors`, events → demos 1, 5, 6, 8.
+2. `track` + virtual motor arrows + identity on reacquire → 2 (partial).
+3. CLIP attributes, include/exclude, references → 2, 3, 7, 10, 12, 15.
+4. `watch` triggers → 3, 9, 10.
+5. Registry: `rfdetr`, `pose` → 16, 11.
+6. `pan_to`, `count_line`, `privacy` → 4, 13, 12.
+7. Keyboard skill → 17.
+Demo 14 lives entirely in the orchestrator.
 
 ## Working style
 
-- Build the thinnest end-to-end path first: capture → YOLOE → ByteTrack → `largest` → `/ws/target` + `/video`. Then hot-swap, then registry, then verify/relate, then `locked`.
-- Log per-stage timings every 100 frames. Log every phase transition and every event.
-- Qinkai is vibe coding under time pressure. Keep modules small, avoid abstractions beyond the Detector protocol, and say plainly when something can only be verified on the 4070.
-- Don't add auth, persistence, Docker, or ROS.
-- Build tests for the most critical parts, since correctness is critical.
-
-## Stretch: Cutie for `locked`
-Only after baseline `locked` (ByteTrack + CLIP) fails the two-people-crossing test.
-Seed Cutie with the YOLOE-seg mask of the selected track; Cutie mask → bbox → TargetState.
-YOLOE stays on as a check (IoU > 0.3 with a same-class detection); mask empty 5 frames → LOST;
-re-seed via CLIP re-ID. Fresh processor per PreparedTask. Cap long-term memory. 4070 only.
+- Record clips of each demo scene early and test every behavior against them on the Mac.
+- Log per-stage timings every 100 frames. Log every op, state transition, and event.
+- Say plainly when something can only be verified on the 4070.
+- No auth, persistence, Docker, or ROS.

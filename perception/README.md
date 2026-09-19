@@ -1,73 +1,48 @@
 # perception
 
-Real-time perception service for the robot car. It reads a video stream, finds the target described by the active `TaskSpec`, and publishes the target's position on every frame. New specs and new models are hot-swapped without restarting.
+The reflex layer. It reads webcam frames and runs whatever behaviors the agent has installed, every frame: detect, track, check attributes, evaluate triggers. It draws the result onto the frame and streams it to the frontend. Events go out to the orchestrator.
 
 ## What it does
 
-1. Pulls the latest frame from `VIDEO_SOURCE` (car camera, phone, webcam, or a looping file).
-2. Detects objects: YOLOE for open-vocabulary text prompts, or a fixed-vocab model (YOLO11, RF-DETR, TensorRT builds) from the registry.
-3. Tracks with ByteTrack, filters by attribute (CLIP) and containment ("shoe inside person"), and selects one target.
-4. Publishes a `TargetState` (target offset, size, and pipeline `phase`) for the controller, plus an annotated MJPEG for the UI.
-5. Accepts new specs on `POST /spec`, prepares them in the background, and swaps them in between frames. Progress goes out as status events.
+- **Detects** with the active model: YOLOE (open vocabulary, any text prompt) or RF-DETR (COCO). Models switch live.
+- **Tracks** objects across frames (ByteTrack) and checks attributes like "red shirt" or "black jacket" with CLIP.
+- **Matches references:** register a photo of a person, then pick that person out of a crowd.
+- **Runs behaviors:** `highlight`, `track`, `watch`, `count_line`, `privacy`, `pan_to`, `pose_trigger`, `keyboard`.
+- **Guides the operator:** when a tracked target leaves the frame, arrows tell a person which way to pan the camera.
+- **Renders** masks, boxes, trails, zones, key badges, arrows, alerts, and a HUD onto an MJPEG stream.
+- **Emits events** (`acquired`, `lost`, `near`, `missing`, `crossed`, `reached`, ...) with snapshot crops.
 
-The controller drives only when `phase == "TRACKING"`.
-
-## Endpoints (port 8001)
+## API (port 8001)
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/spec` | Apply a new TaskSpec `{instruction_id, spec}` |
-| DELETE | `/spec` | Stop tracking (IDLE) |
-| GET | `/models` | Model registry and vocabularies |
-| GET | `/health` | Phase, fps, active model and spec |
-| WS | `/ws/target` | TargetState per frame |
-| WS | `/ws/events` | Status events |
-| GET | `/video` | Annotated MJPEG |
+| POST | `/behaviors` | Start a behavior; returns `{id}` or 422 with a reason |
+| DELETE | `/behaviors/{id}`, `/behaviors` | Stop one or all |
+| POST | `/model` | Switch detector (`yoloe`, `rfdetr`) |
+| POST | `/references` | Register a person image, returns `ref_id` |
+| POST | `/query/count`, `/query/look` | One-shot questions |
+| GET | `/snapshot` | Current raw frame |
+| GET | `/state`, `/models`, `/health` | Introspection |
+| GET | `/video` | Enriched MJPEG |
+| WS | `/ws/events` | Event stream |
 
 ## Run
 
-Run everything from inside `perception/`.
-
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
+pip install -r requirements.txt
 
-# GPU host
-VIDEO_SOURCE=http://<car-ip>/stream .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001
+# GPU host (RTX 4070)
+VIDEO_SOURCE=http://localhost:8003/stream uvicorn perception.main:app --host 0.0.0.0 --port 8001
 
-# Mac (logic testing only; YOLOE runs on CPU here, see below)
-DEVICE=cpu IMGSZ=320 VIDEO_SOURCE=clips/demo.mp4 .venv/bin/uvicorn main:app --port 8001
+# Mac (logic testing on a recorded clip)
+PYTORCH_ENABLE_MPS_FALLBACK=1 IMGSZ=320 VIDEO_SOURCE=clips/duck.mp4 uvicorn perception.main:app --port 8001
 ```
 
-Open `http://localhost:8001/` for a dev page with the feed, live target state and
-a box to post specs. The operator UI is Kevin's, in `frontend/`.
+Try it:
 
 ```bash
-pytest                                   # 141 tests, no weights or GPU needed
-PERCEPTION_TEST_WEIGHTS=1 DEVICE=cpu IMGSZ=320 pytest tests/test_detectors_real.py
-python scripts/smoke_test.py             # whole pipeline against a generated clip
-python scripts/e2e_check.py              # drive a running service over HTTP + WS
+curl -X POST localhost:8001/behaviors -H 'content-type: application/json' \
+  -d '{"kind":"highlight","subject":{"detect":["person"],"pick":"all"},"render":{"mask":true}}'
 ```
 
-Try a spec:
-
-```bash
-curl -X POST localhost:8001/spec -H 'content-type: application/json' -d '{
-  "instruction_id": "test1",
-  "spec": {"spec_id": "s1", "model": "yoloe", "mode": "center",
-           "targets": [{"ref": "t1", "detect": ["pencil"], "select": "largest"}]}}'
-```
-
-## Config
-
-`VIDEO_SOURCE`, `DEVICE` (auto/cuda/mps/cpu), `IMGSZ`, `PORT`, `MODELS_CONFIG`, `ACQUIRE_TIMEOUT_S`, `CONF_THRESHOLD`, `LOG_LEVEL`. Models are listed in `models.yaml`. TensorRT `.engine` files are built on the GPU host and never committed.
-
-## Notes for the GPU host
-
-- Weights (~620 MB) download into `weights/` on first boot, including a 572 MB
-  MobileCLIP text encoder that YOLOE pulls silently. Do that once on good WiFi.
-- `ultralytics` and `supervision` are pinned. The predict signature changed
-  between versions; don't float them.
-- On a Mac, YOLOE is forced to CPU: its text encoder needs float64 and MPS has
-  none. CUDA is unaffected.
-- A model that can't run on the current machine reports `available: false` from
-  `GET /models` and the service still boots.
+Then open `http://localhost:8001/video`.
