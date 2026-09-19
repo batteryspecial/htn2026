@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import supervision as sv
 
-from stages.attributes import AttributeBank, contrastive_scores, cosine, crops_from
-from stages.encoders import HashEncoder
+from attributes.clip_cache import AttributeBank, contrastive_scores, cosine, crops_from
+from attributes.encoders import HashEncoder
 from tests.rig import Rig, boxes
 
 
@@ -174,54 +174,54 @@ RIGHT = ("thing", 480, 240, 200)  # right half
 def test_include_picks_only_the_matching_one(rig):
     """The headline capability: two identical objects, one colour word apart."""
     rig.paint("red", "blue")
-    rig.add("b1", detect=("thing",), include=["red"])
+    b = rig.add(detect=("thing",), include=["red"])
     rig.settle()
     rig.frames(6, seen=boxes(LEFT, RIGHT))
-    assert rig.status("b1").matches == 1
-    assert rig.status("b1").state == "active"
+    assert rig.view(b).matches == 1
+    assert rig.view(b).state == "ACTIVE"
 
 
 def test_exclude_drops_only_the_matching_one(rig):
     """"ignore anybody wearing a black jacket" is this."""
     rig.paint("red", "blue")
-    rig.add("b1", detect=("thing",), exclude=["red"])
+    b = rig.add(detect=("thing",), exclude=["red"])
     rig.settle()
     rig.frames(6, seen=boxes(LEFT, RIGHT))
-    assert rig.status("b1").matches == 1
+    assert rig.view(b).matches == 1
 
 
 def test_no_attributes_means_everything_matches(rig):
     rig.paint("red", "blue")
-    rig.add("b1", detect=("thing",))
+    b = rig.add(detect=("thing",))
     rig.settle()
     rig.frames(6, seen=boxes(LEFT, RIGHT))
-    assert rig.status("b1").matches == 2
+    assert rig.view(b).matches == 2
 
 
 def test_an_impossible_attribute_matches_nothing(rig):
     rig.paint("red", "red")
-    rig.add("b1", detect=("thing",), include=["blue"])
+    b = rig.add(detect=("thing",), include=["blue"])
     rig.settle()
     rig.frames(8, seen=boxes(LEFT, RIGHT))
-    assert rig.status("b1").matches == 0
-    assert rig.status("b1").state == "arming"
+    assert rig.view(b).matches == 0
+    assert rig.view(b).state == "ACTIVE"
 
 
 def test_two_behaviors_split_one_scene_by_attribute(rig):
     """Both read the same cached scores; the crops are encoded once."""
     rig.paint("red", "blue")
-    rig.add("reds", detect=("thing",), include=["red"])
-    rig.add("blues", detect=("thing",), include=["blue"])
+    reds = rig.add(detect=("thing",), include=["red"])
+    blues = rig.add(detect=("thing",), include=["blue"])
     rig.settle()
     rig.frames(6, seen=boxes(LEFT, RIGHT))
-    assert rig.status("reds").matches == 1
-    assert rig.status("blues").matches == 1
-    assert rig.status("reds").track_ids != rig.status("blues").track_ids
+    assert rig.view(reds).matches == 1
+    assert rig.view(blues).matches == 1
+    assert rig.view(reds).track_ids != rig.view(blues).track_ids
 
 
 def test_attribute_scores_are_published_for_the_agent(rig):
     rig.paint("red", "blue")
-    rig.add("b1", detect=("thing",), include=["red"])
+    b = rig.add(detect=("thing",), include=["red"])
     rig.settle()
     rig.frames(6, seen=boxes(LEFT, RIGHT))
     scored = [t for t in rig.last.tracks if t.attributes]
@@ -232,10 +232,10 @@ def test_a_pipeline_without_clip_still_runs(tmp_path):
     """No weights, no GPU, no CLIP: behaviours with no attributes still work."""
     r = Rig(tmp_path, attributes=False)
     try:
-        r.add("b1", detect=("thing",))
+        b = r.add(detect=("thing",))
         r.settle()
         r.frames(6, seen=boxes(LEFT))
-        assert r.status("b1").state == "active"
+        assert r.view(b).state == "ACTIVE"
     finally:
         r.close()
 
@@ -245,9 +245,9 @@ def test_without_clip_an_attribute_behavior_never_falsely_matches(tmp_path):
     everything" would blur the wrong faces."""
     r = Rig(tmp_path, attributes=False)
     try:
-        r.add("b1", detect=("thing",), include=["red"])
+        b = r.add(detect=("thing",), include=["red"])
         r.settle()
         r.frames(8, seen=boxes(LEFT, RIGHT))
-        assert r.status("b1").matches == 0
+        assert r.view(b).matches == 0
     finally:
         r.close()

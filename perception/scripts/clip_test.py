@@ -30,15 +30,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import CFG, setup_logging  # noqa: E402
 from contracts import Behavior  # noqa: E402
 from detectors.registry import Registry  # noqa: E402
-from runtime.builder import Builder  # noqa: E402
+from runtime.workers import Builder  # noqa: E402
 from runtime.capture import Capture  # noqa: E402
 from runtime.events import make_buses  # noqa: E402
 from runtime.loop import InferenceLoop  # noqa: E402
-from runtime.state import Machine  # noqa: E402
+from runtime.health import Health  # noqa: E402
 from runtime.world import Shared  # noqa: E402
 from server.stream import Streamer  # noqa: E402
 from scripts.dump import Dumper  # noqa: E402
-from stages.encoders import ClipEncoder  # noqa: E402
+from attributes.encoders import ClipEncoder  # noqa: E402
 
 PASS, FAIL = "  PASS", "  FAIL"
 

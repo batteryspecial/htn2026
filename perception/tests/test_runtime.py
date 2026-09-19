@@ -14,9 +14,9 @@ import cv2
 import numpy as np
 import pytest
 
-from contracts import Behavior
+from contracts import BehaviorSpec
 from detectors.registry import Registry
-from runtime.builder import Builder
+from runtime.workers import Builder
 from runtime.capture import Capture
 from runtime.events import Bus
 from runtime.ops import Accepted, Applied, Rejected
@@ -100,8 +100,8 @@ def builder(tmp_path):
     b.stop()
 
 
-def behavior(bid="b1", kind="highlight", detect=("thing",)):
-    return Behavior(behavior_id=bid, kind=kind, subject={"detect": list(detect)})
+def behavior(kind="highlight", detect=("thing",)):
+    return BehaviorSpec(kind=kind, subject={"detect": list(detect)})
 
 
 def drain(builder, quiet=0.25, timeout=5.0):
@@ -119,7 +119,7 @@ def drain(builder, quiet=0.25, timeout=5.0):
 
 
 def test_one_behavior_produces_one_applied_world(builder):
-    builder.add_behavior("i1", behavior())
+    builder.add_behavior(behavior())
     out = drain(builder)
     assert isinstance(out[0], Accepted)
     assert sum(isinstance(o, Applied) for o in out) == 1
@@ -128,15 +128,15 @@ def test_one_behavior_produces_one_applied_world(builder):
 def test_operations_accumulate_rather_than_replace(builder):
     """The core difference from the single-spec model: adding a behaviour
     keeps the ones already there."""
-    for i in range(5):
-        builder.add_behavior(f"i{i}", behavior(f"b{i}"))
+    ids = [builder.add_behavior(behavior()) for _ in range(5)]
     drain(builder)
-    assert set(builder.world.behaviors) == {f"b{i}" for i in range(5)}
+    assert set(builder.world.behaviors) == set(ids)
+    assert len(set(ids)) == 5, "ids must be unique"
 
 
 def test_a_burst_of_instructions_all_land(builder):
     for i in range(20):
-        builder.add_behavior(f"i{i}", behavior(f"b{i}"))
+        builder.add_behavior(behavior())
     out = drain(builder)
     applied = [o for o in out if isinstance(o, Applied)]
     assert len(applied) == 20
@@ -144,64 +144,72 @@ def test_a_burst_of_instructions_all_land(builder):
 
 
 def test_concurrent_submits_never_lose_an_instruction(builder):
-    """The agent is async; two tool calls can land at the same moment."""
-    threads = [threading.Thread(target=builder.add_behavior,
-                                args=(f"i{i}", behavior(f"b{i}"))) for i in range(30)]
+    """The agent is async; two tool calls can land at the same moment, and two
+    threads must not be handed the same id."""
+    ids, lock = [], threading.Lock()
+
+    def send():
+        got = builder.add_behavior(behavior())
+        with lock:
+            ids.append(got)
+
+    threads = [threading.Thread(target=send) for _ in range(30)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
+
     out = drain(builder)
-    accepted = {o.op.instruction_id for o in out if isinstance(o, Accepted)}
-    answered = {o.op.instruction_id for o in out
-                if isinstance(o, (Applied, Rejected))}
+    assert len(set(ids)) == 30, "two behaviours were given the same id"
+    accepted = {o.op.seq for o in out if isinstance(o, Accepted)}
+    answered = {o.op.seq for o in out if isinstance(o, (Applied, Rejected))}
     assert len(accepted) == 30
     assert accepted == answered, f"no answer for {accepted - answered}"
-    assert len(builder.world.behaviors) == 30
+    assert set(builder.world.behaviors) == set(ids)
 
 
 def test_a_rejected_behavior_leaves_the_world_alone(builder):
-    builder.add_behavior("i1", behavior("good"))
+    good = builder.add_behavior(behavior())
     drain(builder)
-    builder.add_behavior("i2", behavior("bad", kind="privacy"))
+    builder.add_behavior(behavior(kind="privacy"))
     out = drain(builder)
     assert any(isinstance(o, Rejected) for o in out)
-    assert set(builder.world.behaviors) == {"good"}
+    assert set(builder.world.behaviors) == {good}
 
 
-def test_a_failing_build_does_not_kill_the_worker(builder, monkeypatch):
+def test_a_failing_build_does_not_kill_the_worker(builder, monkeypatch):  # noqa: D103
     det = builder.registry.get("fake")
     monkeypatch.setattr(type(det), "prepare",
                         lambda self, p: (_ for _ in ()).throw(ValueError("unknown class")))
-    builder.add_behavior("bad", behavior())
+    builder.add_behavior(behavior())
     assert any(isinstance(o, Rejected) for o in drain(builder))
 
     monkeypatch.undo()
-    builder.add_behavior("good", behavior("b2"))
+    builder.add_behavior(behavior())
     assert any(isinstance(o, Applied) for o in drain(builder)), "worker died"
 
 
 def test_a_model_swap_asks_for_a_tracking_reset(builder):
     """Tracker ids from a different detector mean nothing."""
-    builder.add_behavior("i1", behavior())
+    builder.add_behavior(behavior())
     drain(builder)
-    builder.set_model("i2", "other")
+    builder.set_model("other")
     applied = [o for o in drain(builder) if isinstance(o, Applied)]
     assert applied and applied[-1].reset_tracking is True
 
 
 def test_adding_a_behavior_does_not_ask_for_a_reset(builder):
-    builder.add_behavior("i1", behavior("a"))
+    builder.add_behavior(behavior())
     drain(builder)
-    builder.add_behavior("i2", behavior("b"))
+    builder.add_behavior(behavior())
     applied = [o for o in drain(builder) if isinstance(o, Applied)]
     assert applied and applied[-1].reset_tracking is False
 
 
 def test_swapping_to_the_model_already_in_use_is_refused(builder):
-    builder.add_behavior("i1", behavior())
+    builder.add_behavior(behavior())
     drain(builder)
-    builder.set_model("i2", "fake")
+    builder.set_model("fake")
     assert any(isinstance(o, Rejected) and "already" in o.reason for o in drain(builder))
 
 

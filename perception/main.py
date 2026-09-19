@@ -14,14 +14,15 @@ import logging
 
 from config import CFG, resolve_device, setup_logging
 from detectors.registry import Registry
-from runtime.builder import Builder
+from runtime.workers import Builder
 from runtime.capture import Capture
 from runtime.events import make_buses
 from runtime.loop import InferenceLoop
-from runtime.state import Machine
+from runtime.health import Health
 from runtime.world import Shared
 from server.api import Service, create_app
-from stages.encoders import ClipEncoder
+from attributes.encoders import ClipEncoder
+from actuator.virtual import VirtualMotor
 
 log = logging.getLogger("perception.main")
 
@@ -37,7 +38,7 @@ def build() -> Service:
         log.warning("models failed to preload: %s", failed)
 
     events, states = make_buses()
-    machine = Machine(emit=events.publish)
+    health = Health(emit=events.publish)
 
     # CLIP is optional: without it, behaviours with no attributes still work
     # and ones that need attributes simply never match. Better than refusing
@@ -49,20 +50,19 @@ def build() -> Service:
         log.warning("CLIP unavailable, attributes disabled: %s", exc)
         encoder = None
 
-    # The service comes up even with no usable detector: it reports FAULT
-    # rather than refusing to start, so the operator can see what is wrong.
-    if any(e["loaded"] for e in registry.manifest()):
-        machine.on_registry_ready()
-    else:
-        machine.on_boot_failed(f"no model loaded; failed: {failed}")
+    # The service comes up even with no usable detector: it reports its
+    # status rather than refusing to start, so the operator sees what is wrong.
+    if not any(e["loaded"] for e in registry.manifest()):
+        health.status, health.detail = "fault", f"no model loaded; failed: {failed}"
 
     capture = Capture()
     builder = Builder(registry, default_model=_default_model(registry), encoder=encoder)
     shared = Shared()
     shared.bank.encoder = encoder
-    loop = InferenceLoop(capture, builder, machine, states, events, shared)
+    loop = InferenceLoop(capture, builder, health, states, events, shared,
+                         actuator=VirtualMotor())
     return Service(registry=registry, capture=capture, builder=builder, loop=loop,
-                   machine=machine, events=events, states=states)
+                   health=health, events=events, states=states)
 
 
 def _default_model(registry: Registry) -> str:

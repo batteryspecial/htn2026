@@ -1,34 +1,35 @@
 """The world: everything the loop is currently doing, as one swappable object.
 
-This replaces the old single-task model. The difference that matters is what
-survives a change:
+What survives a change is the part that matters:
 
-- Adding or removing a behaviour rebuilds the world but **keeps the tracker and
-  the attribute cache**, because starting a privacy blur must not make the
-  follow-cam lose its target.
-- Changing the model **does** reset both, because tracker ids and cached crops
+- Adding or removing a behaviour rebuilds the world but **keeps the tracker,
+  the attribute cache and the trails**, because starting a privacy blur must
+  not make the follow-cam lose its target.
+- Changing the model **does** reset them, because tracker ids and cached crops
   from a different detector mean nothing.
 
-Behaviours already running are carried across a rebuild by identity, so only
-the new one starts from `arming`.
+Behaviours already running are carried across a rebuild by identity, so only a
+new one starts from its initial state.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
 import supervision as sv
 from supervision.tracker.byte_tracker.core import ByteTrack
 
-from behaviors.base import RuntimeBehavior
-from contracts import Subject
+from attributes.clip_cache import AttributeBank
+from behaviors.base import Behavior
 from detectors.base import Detector
-from stages.attributes import AttributeBank
 
 log = logging.getLogger("perception.world")
+
+TRAIL_LEN = 40
 
 
 @dataclass
@@ -36,19 +37,17 @@ class World:
     model_name: str
     detector: Detector
     prepared: Any                 # opaque detector payload from prepare()
-    behaviors: dict[str, RuntimeBehavior] = field(default_factory=dict)
-    #: Phrase and baseline vectors, encoded on the worker for the bank.
+    behaviors: dict[str, Behavior] = field(default_factory=dict)
     text_vectors: dict[str, Any] = field(default_factory=dict)
     baseline_vectors: dict[str, Any] = field(default_factory=dict)
     created_ts: float = field(default_factory=time.time)
 
-    # 1. What the detector must look for -------------------------------
     @staticmethod
     def prompt_union(behaviors) -> list[str]:
-        """Every class any behaviour needs, deduplicated.
+        """Every class any behaviour needs. One detector pass serves them all.
 
-        One detector pass serves every behaviour, so two behaviours watching
-        people cost one forward pass, not two.
+        Paused behaviours are included: they are waiting for a model that can
+        see them, and leaving them out would stop them ever resuming.
         """
         names: list[str] = []
         for b in behaviors:
@@ -59,7 +58,6 @@ class World:
 
     @staticmethod
     def attribute_texts(behaviors) -> list[str]:
-        """Every CLIP phrase any behaviour needs, deduplicated."""
         texts: list[str] = []
         for b in behaviors:
             for t in b.subject.attribute_texts():
@@ -67,37 +65,64 @@ class World:
                     texts.append(t)
         return texts
 
-    @staticmethod
-    def baseline_texts(behaviors) -> list[str]:
-        """`"a {class}"` for every class, the contrastive comparison."""
-        return [f"a {n}" for n in World.prompt_union(behaviors)]
+    def revalidate(self) -> list[str]:
+        """Pause behaviours this model cannot see; resume the ones it can.
 
-    def subjects(self) -> list[Subject]:
-        return [b.subject for b in self.behaviors.values()]
+        A fixed-vocabulary model cannot be asked for "duck". Rather than drop
+        the behaviour, it is held with a reason and comes back by itself when a
+        model that can see it returns.
+        """
+        vocab = self.detector.classes
+        changed = []
+        for b in self.behaviors.values():
+            missing = [] if vocab is None else [
+                c for c in b.subject.prompts() if c not in set(vocab)]
+            if missing and b.state != "PAUSED":
+                b.pause(f"{self.model_name} cannot detect {missing}")
+                changed.append(b.id)
+            elif not missing and b.state == "PAUSED":
+                b.resume()
+                changed.append(b.id)
+        return changed
 
     def summary(self) -> str:
         if not self.behaviors:
             return f"{self.model_name} [idle]"
-        bits = ", ".join(f"{b.kind}:{'+'.join(b.subject.detect)}"
-                         for b in self.behaviors.values())
+        bits = ", ".join(f"{b.kind}:{b.subject.summary()}" for b in self.behaviors.values())
         return f"{self.model_name} [{bits}]"
 
 
 @dataclass
 class Shared:
-    """State that outlives a world rebuild.
-
-    Owned by the loop. Reset only when the detector changes, because that is
-    the only change that invalidates tracker ids and cached crops.
-    """
+    """State that outlives a world rebuild. Owned by the loop."""
 
     tracker: ByteTrack = field(default_factory=ByteTrack)
     bank: AttributeBank = field(default_factory=AttributeBank)
+    trails: dict[int, deque] = field(default_factory=lambda: defaultdict(
+        lambda: deque(maxlen=TRAIL_LEN)))
 
     def reset(self, why: str) -> None:
-        log.info("resetting tracker and attribute cache: %s", why)
+        log.info("resetting tracker, attributes and trails: %s", why)
         self.tracker = ByteTrack()
         self.bank = AttributeBank(self.bank.encoder)
+        self.trails.clear()
 
     def track(self, dets: sv.Detections) -> sv.Detections:
-        return self.tracker.update_with_detections(dets)
+        out = self.tracker.update_with_detections(dets)
+        self._trails(out)
+        return out
+
+    def _trails(self, dets: sv.Detections) -> None:
+        ids = dets.tracker_id
+        if ids is None:
+            return
+        for i in range(len(dets)):
+            x1, y1, x2, y2 = dets.xyxy[i]
+            self.trails[int(ids[i])].append((int((x1 + x2) / 2), int((y1 + y2) / 2)))
+        if len(self.trails) > 512:  # a live stream never ends
+            live = {int(v) for v in ids}
+            for tid in [t for t in self.trails if t not in live]:
+                del self.trails[tid]
+
+    def paths(self) -> dict[int, list[tuple[int, int]]]:
+        return {tid: list(pts) for tid, pts in self.trails.items()}

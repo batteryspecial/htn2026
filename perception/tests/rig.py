@@ -1,7 +1,7 @@
 """A whole pipeline driven by hand, with no camera, no model and no CLIP.
 
-Every test above this uses it, so the thing under test is the real loop, the
-real builder and the real behaviour code, with only the outside world faked.
+Every test above this uses it, so what is under test is the real loop, the real
+worker and the real behaviour code, with only the outside world faked.
 """
 
 from __future__ import annotations
@@ -11,15 +11,16 @@ import time
 import numpy as np
 import supervision as sv
 
-from contracts import Phase
+from actuator.virtual import VirtualMotor
+from attributes.encoders import HashEncoder
+from contracts import BehaviorSpec
 from detectors.base import empty_detections
 from detectors.registry import Registry
-from runtime.builder import Builder
 from runtime.events import Bus
+from runtime.health import Health
 from runtime.loop import InferenceLoop
-from runtime.state import Machine
+from runtime.workers import Builder
 from runtime.world import Shared
-from stages.encoders import HashEncoder
 
 MODELS_YAML = (
     "models:\n"
@@ -29,7 +30,6 @@ MODELS_YAML = (
     "    weights: nope.engine\n    requires_cuda: true\n"
 )
 
-# Colours the HashEncoder can tell apart, so "red" really is not "blue".
 BGR = {"red": (0, 0, 255), "blue": (255, 0, 0), "green": (0, 255, 0)}
 
 
@@ -49,19 +49,19 @@ class FakeCapture:
             self.ts = now
 
     def read(self):
-        return (None, 0.0, self.seq) if self.dead and self.seq == 0 else (self.frame, self.ts, self.seq)
+        return (None, 0.0, self.seq) if self.dead and self.seq == 0 else (
+            self.frame, self.ts, self.seq)
 
     def age(self, now=None):
         return (now or time.time()) - self.ts if self.ts else float("inf")
 
 
-def boxes(*specs, shape=(480, 640)):
-    """Detections from (class_name, cx, cy, size) or (class, cx, cy, size, colour)."""
+def boxes(*specs):
+    """Detections from (class_name, cx, cy, size) tuples."""
     if not specs:
         return empty_detections()
     xyxy, names, conf = [], [], []
-    for spec in specs:
-        name, cx, cy, size = spec[:4]
+    for name, cx, cy, size in specs:
         xyxy.append([cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2])
         names.append(name)
         conf.append(0.9)
@@ -80,24 +80,27 @@ class Rig:
         self.registry = Registry.from_yaml(p)
         self.registry.preload()
         self.detector = self.registry.get("fake")
+        # Start blind. Without this the detector invents boxes during settle()
+        # and a track behaviour latches onto something no test asked for.
+        self.detector.set_script([empty_detections()])
 
         self.events, self.states = [], []
         ev_bus, st_bus = Bus(history=50), Bus(latest_only=True)
         ev_bus.subscribe_callback(self.events.append)
         st_bus.subscribe_callback(self.states.append)
-        self.event_bus = ev_bus
+        self.event_bus, self.state_bus = ev_bus, st_bus
 
         self.encoder = HashEncoder() if attributes else None
-        self.machine = Machine(emit=ev_bus.publish)
-        self.machine.on_registry_ready()
+        self.health = Health(emit=ev_bus.publish)
         self.capture = FakeCapture()
         self.builder = Builder(self.registry, default_model="fake",
                                encoder=self.encoder).start()
         shared = Shared()
         shared.bank.encoder = self.encoder
         shared.bank.ttl = 0.0  # re-score every frame; tests move time by hand
-        self.loop = InferenceLoop(self.capture, self.builder, self.machine,
-                                  st_bus, ev_bus, shared)
+        self.motor = VirtualMotor()
+        self.loop = InferenceLoop(self.capture, self.builder, self.health,
+                                  st_bus, ev_bus, shared, actuator=self.motor)
         self.now = 1000.0
 
     def close(self):
@@ -106,9 +109,9 @@ class Rig:
     # 1. Driving -------------------------------------------------------
     def paint(self, *colours):
         """Colour the frame so the attribute encoder has something to read."""
-        h, w = self.capture.frame.shape[:2]
         if not colours:
             return
+        h, w = self.capture.frame.shape[:2]
         band = w // len(colours)
         for i, c in enumerate(colours):
             self.capture.frame[:, i * band:(i + 1) * band] = BGR[c]
@@ -122,44 +125,48 @@ class Rig:
             self.loop.step(self.now)
 
     def settle(self, timeout=3.0):
-        """Step frames until the builder has handed everything over."""
+        """Step frames until the worker's world is the one the loop is running.
+
+        Never calls builder.poll(): that is the loop's queue, and draining it
+        here would swallow the very outcome being waited for.
+        """
         deadline = time.time() + timeout
         while time.time() < deadline:
             self.frames(1)
-            if (self.builder._q.empty()
-                    and self.machine.phase not in (Phase.SWITCHING, Phase.LOADING_MODEL)):
+            if self.builder._q.empty() and self.loop.world is self.builder.world:
                 return
             time.sleep(0.004)
-        raise AssertionError(f"stuck in {self.machine.phase}")
+        raise AssertionError("builder never settled")
 
     # 2. Behaviours ----------------------------------------------------
-    def add(self, behavior_id, kind="highlight", detect=("thing",), **subject):
-        from contracts import Behavior
-
-        spec = Behavior(behavior_id=behavior_id, kind=kind,
-                        subject={"detect": list(detect), **subject},
-                        select=subject.pop("select", "largest"))
-        self.builder.add_behavior(f"i-{behavior_id}", spec)
-        return spec
+    def add(self, kind="highlight", detect=("thing",), **subject):
+        params = subject.pop("params", {})
+        render = subject.pop("render", {})
+        spec = BehaviorSpec(kind=kind, subject={"detect": list(detect), **subject},
+                            params=params, render=render)
+        return self.builder.add_behavior(spec)
 
     def remove(self, behavior_id):
-        self.builder.remove_behavior(f"d-{behavior_id}", behavior_id)
+        self.builder.remove_behavior(behavior_id)
 
     # 3. Reading -------------------------------------------------------
     @property
-    def stages(self):
-        return [getattr(e, "stage", None) for e in self.events if hasattr(e, "stage")]
-
-    @property
     def fired(self):
-        return [e for e in self.events if hasattr(e, "kind")]
+        return self.events
 
     @property
     def last(self):
         return self.states[-1] if self.states else None
 
-    def status(self, behavior_id):
+    def view(self, behavior_id):
         s = self.last
         if not s:
             return None
-        return next((b for b in s.behaviors if b.behavior_id == behavior_id), None)
+        return next((b for b in s.behaviors if b.id == behavior_id), None)
+
+    def state_of(self, behavior_id):
+        v = self.view(behavior_id)
+        return v.state if v else None
+
+    def types(self):
+        return [e.type for e in self.events]

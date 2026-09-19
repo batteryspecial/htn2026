@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from stages.attributes import crops_from
+from attributes.clip_cache import crops_from
 
 
 class Dumper:

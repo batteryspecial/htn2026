@@ -1,42 +1,49 @@
 """HTTP and WebSocket surface. Port 8001.
 
-Shaped by who is on the other end:
+Shaped by who is on the other end. The **agent** starts and stops behaviours
+and asks questions; it thinks in seconds and must never be blocked, so every
+change returns immediately and is applied in the background. The **frontend**
+watches the enriched feed and a state channel.
 
-- The **agent** starts and stops behaviours and asks questions. It works in
-  seconds and must never be held up, so every change returns immediately and
-  is applied in the background.
-- The **frontend** watches the annotated feed and a status channel.
-- Anything that acts on the world reads target state, which is level-triggered
-  and lossy in its favour: the newest position, never a queue of stale ones.
+Nothing here mutates pipeline state. Requests become operations the frame loop
+picks up, which keeps that loop the only writer.
 
-Nothing here mutates pipeline state. Requests become operations the inference
-loop picks up, which keeps that loop the only writer.
+Rejections are specific on purpose: the agent reads the reason and retries, so
+"label 'duck' is not in the rfdetr vocabulary" is worth more than "invalid".
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 import time
-import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from behaviors.kinds import BUILT, KINDS
 from config import CFG, resolve_device
-from contracts import BehaviorRequest, StatusEvent
-from detectors.base import UnknownClassError, validate_vocab
+from contracts import (
+    BehaviorCreated,
+    BehaviorSpec,
+    CountQuery,
+    CountResult,
+    Health as HealthView,
+    HudText,
+    LookQuery,
+    LookResult,
+    ModelChoice,
+)
 from detectors.registry import Registry
-from runtime.builder import Builder
 from runtime.capture import Capture
 from runtime.events import Bus
+from runtime.health import Health
 from runtime.loop import InferenceLoop
-from runtime.state import Machine
+from runtime.workers import Builder
 from server.debug_page import DEBUG_PAGE
-from server.stream import Streamer
 
 log = logging.getLogger("perception.api")
 
@@ -49,9 +56,10 @@ class Service:
     capture: Capture
     builder: Builder
     loop: InferenceLoop
-    machine: Machine
+    health: Health
     events: Bus
     states: Bus
+    snapshots: dict[str, bytes] = field(default_factory=dict)
 
     def start(self) -> None:
         self.capture.start()
@@ -80,44 +88,31 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
                 svc.stop()
 
     app = FastAPI(title="perception", lifespan=lifespan)
+    from server.stream import Streamer
+
     streamer = Streamer(svc.loop)
     app.state.svc = svc
     app.state.streamer = streamer
 
     # 1. Behaviours ------------------------------------------------------
-    @app.post("/behaviors", status_code=202)
-    async def add_behavior(req: BehaviorRequest):
-        """Start a standing instruction. Applied between two frames.
-
-        Rejects up front only what can be known without touching a model: an
-        unimplemented kind, an unknown model, or a class a fixed-vocabulary
-        model cannot produce. Anything else is answered later as a `failed`
-        event, because making the agent wait on a model load defeats the point.
-        """
-        b = req.behavior
-        if b.kind not in BUILT:
-            return _reject(svc, req.instruction_id, b.behavior_id,
-                           f"behaviour kind {b.kind!r} is not implemented yet; "
+    @app.post("/behaviors", status_code=201)
+    async def add_behavior(spec: BehaviorSpec):
+        """Start a standing instruction. The id comes back at once; the
+        behaviour is installed between two frames."""
+        if spec.kind not in BUILT:
+            return _reject(f"behaviour kind {spec.kind!r} is not implemented yet; "
                            f"available: {sorted(BUILT)}")
-        if b.behavior_id in svc.loop.behaviors:
-            return _reject(svc, req.instruction_id, b.behavior_id,
-                           f"behaviour {b.behavior_id!r} already running")
-        bad = _vocab_error(svc, b.subject.prompts())
+        bad = _vocab_error(svc, spec)
         if bad:
-            return _reject(svc, req.instruction_id, b.behavior_id, bad)
-
-        svc.builder.add_behavior(req.instruction_id, b)
-        return {"accepted": True, "behavior_id": b.behavior_id,
-                "instruction_id": req.instruction_id}
+            return _reject(bad)
+        return BehaviorCreated(id=svc.builder.add_behavior(spec))
 
     @app.get("/behaviors")
     async def list_behaviors():
-        """What is running, and what could be. The agent's menu."""
-        summary = svc.loop.last_summary
+        state = svc.loop.last_state
         return {
-            "behaviors": [s.model_dump() for s in (summary.behaviors if summary else [])],
-            "kinds": {"available": sorted(BUILT),
-                      "planned": sorted(set(KINDS) - BUILT)},
+            "behaviors": [b.model_dump() for b in (state.behaviors if state else [])],
+            "kinds": {"available": sorted(BUILT), "planned": sorted(set(KINDS) - BUILT)},
         }
 
     @app.delete("/behaviors/{behavior_id}", status_code=202)
@@ -125,70 +120,94 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         if behavior_id not in svc.loop.behaviors:
             return JSONResponse(status_code=404,
                                 content={"detail": f"no behaviour {behavior_id!r}"})
-        svc.builder.remove_behavior(f"del-{behavior_id}", behavior_id)
+        svc.builder.remove_behavior(behavior_id)
         return {"removed": behavior_id}
 
     @app.delete("/behaviors", status_code=202)
     async def clear_behaviors():
-        """Stop everything. The panic button."""
         svc.builder.clear()
         return {"cleared": True}
 
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
-    async def set_model(body: dict):
-        """Swap the detector. Resets tracking, because ids from a different
-        model mean nothing."""
-        name = body.get("model")
+    async def set_model(choice: ModelChoice):
+        """Swap the detector. Behaviours the new model cannot see are paused
+        with a reason and resume when a model that can see them returns."""
         try:
-            entry = svc.registry.entry(name)
+            entry = svc.registry.entry(choice.name)
         except KeyError:
-            return _reject(svc, body.get("instruction_id", "model"), None,
-                           f"unknown model {name!r}; available: {svc.registry.names()}")
+            return _reject(f"unknown model {choice.name!r}; "
+                           f"available: {svc.registry.names()}")
         if not entry.available:
-            return _reject(svc, body.get("instruction_id", "model"), None,
-                           f"model {name!r} unavailable: {entry.unavailable_reason}")
-        svc.builder.set_model(body.get("instruction_id", "model"), name)
-        return {"accepted": True, "model": name}
+            return _reject(f"model {choice.name!r} unavailable: {entry.unavailable_reason}")
+        svc.builder.set_model(choice.name)
+        return {"accepted": True, "model": choice.name}
 
     @app.get("/models")
     async def models():
-        """What this machine can actually do. The agent's device manifest."""
+        """What this machine can do. The agent's device manifest."""
         return {"models": svc.registry.manifest(), "device": resolve_device()}
 
     # 3. Introspection ---------------------------------------------------
     @app.get("/health")
-    async def health():
-        s = svc.loop.last_summary
-        return {
-            "phase": svc.machine.phase.value,
-            "fps": round(svc.loop.timings.fps, 1),
-            "model": svc.loop._model_name,
-            "behaviors": len(svc.loop.behaviors),
-            "tracks": len(s.tracks) if s else 0,
-            "attributes": bool(svc.loop.shared.bank.encoder),
-            "last_frame_age_ms": (round(svc.capture.age() * 1000, 1)
-                                  if svc.capture.age() != float("inf") else None),
-            "source_open": svc.capture.opened,
-            "timings_ms": {k: round(v, 2) for k, v in svc.loop.timings.ewma.items()},
-            "frames": svc.loop.timings.frames,
-            "device": resolve_device(),
-        }
+    async def health() -> HealthView:
+        return HealthView(
+            status=svc.health.status, fps=round(svc.loop.timings.fps, 1),
+            model=svc.loop.model_name, camera_ok=svc.health.camera_ok,
+            behaviors=len(svc.loop.behaviors), device=resolve_device(),
+            detail=svc.health.detail,
+        )
 
     @app.get("/state")
     async def state():
-        """The latest frame summary, for a client that would rather poll."""
-        s = svc.loop.last_summary
+        s = svc.loop.last_state
         return s.model_dump(mode="json") if s else {}
 
-    # 4. Live channels ----------------------------------------------------
+    @app.post("/hud")
+    async def set_hud(body: HudText):
+        """The instruction the operator typed, drawn on the frame."""
+        svc.loop.hud_text = body.text or None
+        return {"hud": svc.loop.hud_text}
+
+    # 4. Queries ---------------------------------------------------------
+    @app.post("/query/count")
+    async def query_count(q: CountQuery) -> CountResult:
+        """Median over a window, so one bad frame cannot change the answer."""
+        counts = await _sample(svc, q.selector, q.window_s)
+        return CountResult(count=int(statistics.median(counts)) if counts else 0,
+                           samples=len(counts), window_s=q.window_s)
+
+    @app.post("/query/look")
+    async def query_look(q: LookQuery) -> LookResult:
+        """What is in front of the camera right now, with attribute scores."""
+        state = svc.loop.last_state
+        tracks = list(state.tracks) if state else []
+        if q.selector:
+            wanted = set(q.selector.detect)
+            tracks = [t for t in tracks if t.label in wanted]
+        return LookResult(tracks=tracks)
+
+    @app.get("/snapshot")
+    async def snapshot():
+        """The raw frame, for the agent's vision model. No overlays: they
+        would be read as part of the scene."""
+        data = streamer.raw()
+        if not data:
+            return JSONResponse(status_code=503, content={"detail": "no frame"})
+        return Response(content=data, media_type="image/jpeg")
+
+    @app.get("/snapshots/{event_id}.jpg")
+    async def event_snapshot(event_id: str):
+        data = svc.snapshots.get(event_id)
+        if not data:
+            return JSONResponse(status_code=404, content={"detail": "no such snapshot"})
+        return Response(content=data, media_type="image/jpeg")
+
+    # 5. Live channels ----------------------------------------------------
     @app.websocket("/ws/state")
     async def ws_state(ws: WebSocket):
-        """One FrameSummary per frame: tracks and behaviour states.
-
-        Level-triggered and lossy: a client that falls behind is given the
-        newest frame rather than a backlog of stale ones.
-        """
+        """One StateView per frame. Level-triggered and lossy: a client that
+        falls behind gets the newest, not a backlog of stale frames."""
         await _pump(ws, svc.states, replay=False)
 
     @app.websocket("/ws/events")
@@ -196,7 +215,7 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         """Things that happened. Edge-triggered, replayed to a late client."""
         await _pump(ws, svc.events, replay=True)
 
-    # 5. Video ------------------------------------------------------------
+    # 6. Video ------------------------------------------------------------
     @app.get("/video")
     async def video():
         return StreamingResponse(
@@ -207,44 +226,48 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
     @app.get("/frame.jpg")
     async def frame_jpg():
-        return StreamingResponse(iter([streamer.jpeg()]), media_type="image/jpeg")
+        return Response(content=streamer.jpeg(), media_type="image/jpeg")
 
     @app.get("/", response_class=HTMLResponse)
     async def debug():
-        """Dev page: the feed, live state, and a box to start behaviours.
-
-        Not the operator UI. This exists so the pipeline can be driven and
-        watched with nothing else running.
-        """
+        """Dev page. Not the operator UI, which lives with the orchestrator."""
         return DEBUG_PAGE
 
     return app
 
 
 # --- helpers -------------------------------------------------------------
-def _vocab_error(svc: Service, prompts: list[str]) -> str | None:
+async def _sample(svc: Service, selector, window_s: float) -> list[int]:
+    """Count matching tracks over a window of published frames."""
+    wanted = set(selector.detect)
+    deadline = time.time() + window_s
+    counts, seen = [], None
+    while time.time() < deadline:
+        state = svc.loop.last_state
+        if state is not None and state.ts != seen:
+            seen = state.ts
+            counts.append(sum(1 for t in state.tracks if t.label in wanted))
+        await asyncio.sleep(0.02)
+    return counts
+
+
+def _vocab_error(svc: Service, spec: BehaviorSpec) -> str | None:
     """Fixed-vocabulary models are checked before anything is queued, so the
     agent is told at once rather than by an event a second later."""
     world = svc.loop.world
     detector = world.detector if world else None
     if detector is None or detector.classes is None:
         return None
-    try:
-        validate_vocab(prompts, detector.classes, detector.name)
-    except UnknownClassError as exc:
-        return str(exc)
+    missing = [c for c in spec.subject.prompts() if c not in set(detector.classes)]
+    if missing:
+        return (f"label(s) {missing} are not in the {detector.name} vocabulary; "
+                f"it knows {len(detector.classes)} classes, "
+                f"e.g. {detector.classes[:8]}")
     return None
 
 
-def _reject(svc: Service, instruction_id: str, behavior_id: str | None,
-            reason: str) -> JSONResponse:
-    """422 plus a `failed` event, so a rejection reaches the UI even when the
-    caller swallowed the HTTP error."""
-    log.warning("rejected %s: %s", instruction_id, reason)
-    svc.events.publish(StatusEvent(
-        stage="failed", instruction_id=instruction_id, spec_id=behavior_id,
-        detail=reason, ts=time.time(),
-    ))
+def _reject(reason: str) -> JSONResponse:
+    log.warning("rejected: %s", reason)
     return JSONResponse(status_code=422, content={"detail": reason})
 
 
