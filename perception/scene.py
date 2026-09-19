@@ -204,6 +204,68 @@ def sweep(registry, frame, candidates: list[str], shape) -> list[TrackView]:
     return out
 
 
+#: A phrase scoring below this is not going to hold up on stage.
+PROBE_WEAK = 0.25
+
+
+def probe(registry, frame, phrases: list[str], shape) -> list[dict]:
+    """Try each wording on the current frame and report what it found.
+
+    One pass per phrase rather than one pass over the union: the union scores
+    slightly differently, and the question being asked is "does *this* wording
+    work", which only a solo run answers honestly.
+
+    Runs on the spare detector, like the scene sweep, so probing never
+    disturbs what the camera is tracking.
+    """
+    name = registry.sweep_detector()
+    if name is None:
+        raise NoSweepDetector(
+            "no spare open-vocabulary detector to probe with; add one to "
+            "models.yaml with sweep: true")
+    detector = registry.get(name)
+
+    h, w = shape[:2]
+    out = []
+    for phrase in phrases:
+        detector.apply(detector.prepare([phrase]))
+        # Deliberately below the pipeline's own cutoff: a phrase scoring 0.10
+        # is failing differently from one scoring 0.00, and that difference is
+        # the whole point of looking.
+        dets = detector.infer(frame, conf=0.05)
+        confs = [float(c) for c in (dets.confidence if dets.confidence is not None else [])]
+        areas = [float((b[2] - b[0]) * (b[3] - b[1]) / (w * h)) for b in dets.xyxy]
+        out.append({
+            "phrase": phrase,
+            "found": len(dets),
+            "mean_conf": round(sum(confs) / len(confs), 3) if confs else 0.0,
+            "max_conf": round(max(confs), 3) if confs else 0.0,
+            "max_area": round(max(areas), 4) if areas else 0.0,
+        })
+    return out
+
+
+def probe_advice(results: list[dict]) -> tuple[str | None, str]:
+    """Which wording to use, and what to do if none of them work."""
+    usable = [r for r in results if r["found"] and r["max_conf"] >= PROBE_WEAK]
+    if usable:
+        best = max(usable, key=lambda r: r["max_conf"])
+        return best["phrase"], (
+            f"use {best['phrase']!r} (scored {best['max_conf']:.2f}). "
+            f"Sending the others alongside it costs nothing and only helps.")
+
+    weak = [r for r in results if r["found"]]
+    if weak:
+        best = max(weak, key=lambda r: r["max_conf"])
+        return best["phrase"], (
+            f"{best['phrase']!r} is the least bad at {best['max_conf']:.2f}, which is "
+            f"too low to hold up. Try a longer, more specific phrase, or move "
+            f"the object closer or better lit.")
+    return None, ("none of these wordings found anything. Try a more specific "
+                  "phrase, a more general category, or check the object is in "
+                  "shot. See SELECTORS.md.")
+
+
 def candidates_for(requested: list[str] | None) -> list[str]:
     """What to sweep for. The caller's list wins; otherwise the everyday one."""
     if requested:

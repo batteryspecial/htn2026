@@ -42,8 +42,7 @@ KINDS: dict[str, type[Behavior]] = {
 BUILT = {k for k, c in KINDS.items() if not issubclass(c, NotYetBuilt)}
 
 
-def build(behavior_id: str, spec: BehaviorSpec, index: int = 0,
-          taken: set | None = None) -> Behavior:
+def build(behavior_id: str, spec: BehaviorSpec, index: int = 0, taken: set | None = None) -> Behavior:
     """Construct a runtime behaviour, or raise. Worker thread only.
 
     `taken` is the colours already on screen, so a new behaviour does not come

@@ -289,3 +289,59 @@ def test_with_no_spare_detector_the_question_is_answered_narrowly(client, monkey
 def test_an_entry_marked_for_sweeping_is_preferred(rig):
     assert rig.registry.entry("scene").sweep is True
     assert rig.registry.sweep_detector() == "scene"
+
+
+# 7. The phrase probe ------------------------------------------------------
+# The debugging loop for the failure that looks like a broken pipeline and is
+# really a word the detector has no match for.
+def test_a_probe_reports_each_wording_separately(client):
+    client.rig.frames(2, seen=boxes(THING))
+    d = client.post("/probe", json={"phrases": ["thing", "nonexistent"]}).json()
+    by_phrase = {r["phrase"]: r for r in d["results"]}
+    assert by_phrase["thing"]["found"] == 1
+    assert by_phrase["nonexistent"]["found"] == 0
+
+
+def test_a_probe_recommends_the_wording_that_worked(client):
+    client.rig.frames(2, seen=boxes(THING))
+    d = client.post("/probe", json={"phrases": ["nonexistent", "thing"]}).json()
+    assert d["best"] == "thing"
+    assert "thing" in d["advice"]
+
+
+def test_a_probe_that_finds_nothing_says_what_to_try(client):
+    client.rig.frames(2, seen=boxes(THING))
+    d = client.post("/probe", json={"phrases": ["unicorn", "dragon"]}).json()
+    assert d["best"] is None
+    assert "SELECTORS.md" in d["advice"]
+
+
+def test_a_probe_reports_size_so_tiny_matches_are_visible(client):
+    """"Found" and "found usefully" are different answers."""
+    client.rig.frames(2, seen=boxes(THING))
+    r = client.post("/probe", json={"phrases": ["thing"]}).json()["results"][0]
+    assert r["max_area"] > 0
+
+
+def test_probing_does_not_disturb_tracking(client):
+    """Same rule as the scene sweep: never the live detector."""
+    b = client.post("/behaviors", json={
+        "kind": "track", "subject": {"detect": ["thing"], "pick": "ref"}}).json()["id"]
+    client.rig.settle()
+    client.rig.frames(6, seen=boxes(THING))
+    before = client.rig.view(b).data["track_id"]
+
+    client.post("/probe", json={"phrases": ["laptop", "coffee mug", "thing"]})
+    client.rig.frames(4, seen=boxes(THING))
+    assert client.rig.state_of(b) == "TRACKING"
+    assert client.rig.view(b).data["track_id"] == before
+
+
+def test_a_probe_with_no_frame_says_so(client):
+    d = client.post("/probe", json={"phrases": ["thing"]}).json()
+    assert d["detail"] == "no frame to look at"
+
+
+@pytest.mark.parametrize("bad", [{"phrases": []}, {}, {"phrases": ["a"] * 7}])
+def test_a_malformed_probe_is_refused(client, bad):
+    assert client.post("/probe", json=bad).status_code == 422

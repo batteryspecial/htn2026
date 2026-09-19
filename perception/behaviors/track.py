@@ -115,11 +115,19 @@ class Track(Behavior):
         self._exit_side = None
         if not self._announced:
             self._announced = True
-            outcome.events.append(self.event("acquired", frame, chosen,
-                                             detail=f"{self.label}: acquired"))
+            outcome.events.append(self.event(
+                "acquired",
+                frame,
+                chosen,
+                detail=f"{self.label}: acquired"
+            ))
         elif was_lost:
-            outcome.events.append(self.event("reacquired", frame, chosen,
-                                             detail=f"{self.label}: reacquired"))
+            outcome.events.append(self.event(
+                "reacquired",
+                frame,
+                chosen,
+                detail=f"{self.label}: reacquired"
+            ))
 
     def _remember(self, frame: Frame, chosen: int) -> None:
         """Keep the appearance of a confident sighting, for re-identification."""
@@ -153,12 +161,17 @@ class Track(Behavior):
         if not self.param("guidance", True):
             return None
         if self.state == "EDGE":
-            return MotorCommand(rate_deg_s=8.0 * self._last_cx,
-                                reason=f"{self.label} near the edge")
+            return MotorCommand(
+                rate_deg_s=8.0 * self._last_cx,
+                reason=f"{self.label} near the edge"
+            )
         if self.state in ("LOST", "SEARCHING"):
             side = self._exit_side or "left"
-            return MotorCommand(rate_deg_s=-20.0 if side == "left" else 20.0,
-                                reason=f"pan {side}", urgent=True)
+            return MotorCommand(
+                rate_deg_s=-20.0 if side == "left" else 20.0,
+                reason=f"pan {side}",
+                urgent=True
+            )
         return None
 
     # 4. Render ---------------------------------------------------------
@@ -172,9 +185,15 @@ class Track(Behavior):
         if render.boxes:
             ids = subset.tracker_id
             label = f"{self.label}{f'#{ids[0]}' if ids is not None else ''}"
-            outcome.layers.append(Boxes(boxes=subset.xyxy, labels=[label],
-                                        color=self.color, emphasis=0))
+            outcome.layers.append(Boxes(
+                boxes=subset.xyxy,
+                labels=[label],
+                color=self.color,
+                emphasis=0
+            ))
         if render.trail and frame.tracks.tracker_id is not None:
             tid = int(frame.tracks.tracker_id[chosen])
-            outcome.layers.append(Trails(paths=[frame.trails.get(tid, [])],
-                                         color=self.color))
+            outcome.layers.append(Trails(
+                paths=[frame.trails.get(tid, [])],
+                color=self.color
+            ))

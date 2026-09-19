@@ -224,3 +224,52 @@ def test_adding_a_model_is_only_a_config_edit(tmp_path):
     assert r.has_role("pose")
     r.set_active("pose", "pose_b")
     assert r.active("pose") == "pose_b"
+
+
+# 6. The box-size floor ----------------------------------------------------
+# Lives here because it is a zoo-adjacent frame-level filter, and because it
+# silently cost us every distant face for a day.
+def _dets(*boxes):
+    import numpy as np
+    import supervision as sv
+
+    return sv.Detections(
+        xyxy=np.array(boxes, dtype=np.float32),
+        confidence=np.full(len(boxes), 0.5, dtype=np.float32),
+        class_id=np.zeros(len(boxes), dtype=int),
+        data={"class_name": np.array(["face"] * len(boxes), dtype=object)},
+    )
+
+
+def _winnowed(dets, frame_area):
+    from runtime.world import Shared
+
+    shared = Shared()
+    shared.frame_area = frame_area
+    return shared._winnow(dets)
+
+
+def test_a_distant_face_survives_at_1080p():
+    """Measured: a face at 4 m is about 55 px tall. The old area floor wanted
+    56x56 at 1080p and threw it away, which is why detection looked like it
+    only worked close up."""
+    kept = _winnowed(_dets([100, 100, 145, 155]), 1920 * 1080)
+    assert len(kept) == 1
+
+
+def test_a_very_distant_face_survives_too():
+    kept = _winnowed(_dets([100, 100, 130, 140]), 1920 * 1080)
+    assert len(kept) == 1
+
+
+def test_degenerate_boxes_are_still_dropped():
+    kept = _winnowed(_dets([100, 100, 104, 104], [200, 200, 260, 280]), 1920 * 1080)
+    assert len(kept) == 1
+    assert kept.xyxy[0][2] == 260
+
+
+def test_the_floor_does_not_rise_with_resolution():
+    """The design error in the old one: a sharper camera sees more detail, so
+    its cutoff must not be stricter."""
+    box = _dets([100, 100, 130, 140])
+    assert len(_winnowed(box, 640 * 480)) == len(_winnowed(box, 3840 * 2160)) == 1

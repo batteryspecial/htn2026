@@ -38,6 +38,9 @@ from contracts import (
     HudText,
     LookQuery,
     LookResult,
+    PhraseResult,
+    ProbeRequest,
+    ProbeResult,
     ModelChoice,
 )
 from zoo.registry import Registry
@@ -260,6 +263,33 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
             wanted = set(q.selector.detect)
             tracks = [t for t in tracks if t.label in wanted]
         return LookResult(tracks=tracks)
+
+    @app.post("/probe")
+    async def probe(req: ProbeRequest) -> ProbeResult:
+        """Does this wording actually find anything, right now?
+
+        The failure that looks like a broken pipeline and is really a word the
+        detector has no match for. Measured here: "duck" finds nothing in
+        frames where "yellow duck" finds it every time, and the same phrase
+        stops working in a different room. Rather than guessing, ask.
+
+        Runs on the spare detector, so probing never disturbs tracking.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        import scene as scene_mod
+
+        frame = svc.loop.view.frame
+        if frame is None:
+            return ProbeResult(detail="no frame to look at")
+        try:
+            raw = await run_in_threadpool(
+                scene_mod.probe, svc.registry, frame, req.phrases, frame.shape)
+        except Exception as exc:
+            return ProbeResult(detail=str(exc))
+        best, advice = scene_mod.probe_advice(raw)
+        return ProbeResult(results=[PhraseResult(**r) for r in raw],
+                           best=best, advice=advice)
 
     @app.post("/describe")
     async def describe(req: DescribeRequest) -> DescribeResult:

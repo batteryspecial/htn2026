@@ -64,8 +64,46 @@ class Config:
     # cutoff is the only one that bites.
     TRACK_ACTIVATION_THRESHOLD: float = _f("TRACK_ACTIVATION_THRESHOLD", 0.02)
     LOST_TRACK_BUFFER: int = _i("LOST_TRACK_BUFFER", 60)
+
+    # ByteTrack does not match a track to a detection on overlap alone. It
+    # multiplies them (matching.fuse_score): cost = 1 - IoU * score. Even at a
+    # perfect overlap of 1.0 that collapses to cost = 1 - score, so a track
+    # only re-matches itself when
+    #
+    #     score >= 1 - MIN_MATCHING_THRESHOLD
+    #
+    # This is a *second* gate, independent of det_thresh, and it decides
+    # whether a track survives rather than whether it is born. At the stock
+    # 0.8 the floor is 0.20: measured, a detection at 0.199 creates a track on
+    # one frame and is then abandoned forever, while 0.21 tracks perfectly.
+    # Everything in the 0.15-0.20 band therefore flickered — detected every
+    # frame, tracked for one — which reads as "it only works up close".
+    #
+    # Left at stock. Raising it was the first fix attempted and it works, but
+    # TRACKER_CONF_FLOOR below supersedes it: once confidences are mapped into
+    # the range ByteTrack expects, the stock gate is already comfortably below
+    # them. Stock is the better place to be — raising this makes matching more
+    # permissive, so two heavily overlapping objects grow likelier to swap ids,
+    # and the follow-cam depends on them not doing that.
     MIN_MATCHING_THRESHOLD: float = _f("MIN_MATCHING_THRESHOLD", 0.8)
     TRACK_FRAME_RATE: int = _i("TRACK_FRAME_RATE", 30)
+
+    # A third gate, and the only one that cannot be configured: ByteTrack
+    # confirms a newly created track by re-matching it on the next frame with
+    # `thresh=0.7` written inline (core.py, "Deal with unconfirmed tracks").
+    # Fused with score as everywhere else, that demands `score >= 0.30`. Below
+    # it a track is born, fails to confirm, is removed, and is born again the
+    # next frame — which looks like a mask flashing rather than like a
+    # threshold. Measured: 0.2 never confirms, 0.3 confirms on frame two.
+    #
+    # ByteTrack's constants assume a COCO-style detector where a real object
+    # scores 0.8+. Open-vocabulary matching is a text-image similarity on a
+    # different scale entirely, where 0.15-0.30 is a correct detection. So
+    # rather than patch a hardcoded constant in a dependency, confidences are
+    # mapped into the range ByteTrack was designed for on the way in and
+    # restored on the way out. Monotonic, so nothing downstream sees a
+    # different ordering, and version-independent.
+    TRACKER_CONF_FLOOR: float = _f("TRACKER_CONF_FLOOR", 0.35)
 
     # 3. Timing / state machine
     ACQUIRE_TIMEOUT_S: float = _f("ACQUIRE_TIMEOUT_S", 3.0)
@@ -82,7 +120,21 @@ class Config:
     # Drop detections smaller than this fraction of the frame. Open-vocabulary
     # detectors invent small boxes on texture, and a junk box sails through any
     # exclusion and inflates the count.
-    MIN_BOX_FRAC: float = _f("MIN_BOX_FRAC", 0.0015)
+    # Reject degenerate boxes: a minimum *side*, in pixels, not an area.
+    #
+    # This replaces a fraction-of-frame-area floor that was wrong twice over.
+    # It scaled quadratically with resolution, so a sharper camera — which
+    # sees more detail — got a *higher* cutoff: at 1080p the old 0.0015
+    # demanded a 56x56 box, which throws away any face past about 3.5 m.
+    # And it never caught the junk it was added for, because open-vocabulary
+    # texture detections are tall narrow strips with plenty of area.
+    #
+    # 12 px kills 3-pixel noise and nothing a person would call an object.
+    MIN_BOX_PX: int = _i("MIN_BOX_PX", 12)
+    # Area floor as a fraction of the frame. Off by default; the reason it was
+    # wrong is above. Raise it only for a fixed camera where you know how big
+    # the things you care about are.
+    MIN_BOX_FRAC: float = _f("MIN_BOX_FRAC", 0.0)
     VERIFY_BATCH: int = _i("VERIFY_BATCH", 16)
     RELATE_LOWER_FRAC: float = _f("RELATE_LOWER_FRAC", 0.4)
     LOCK_SIM_THRESHOLD: float = _f("LOCK_SIM_THRESHOLD", 0.8)

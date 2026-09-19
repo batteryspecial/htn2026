@@ -32,6 +32,15 @@ class FakeDetector(Detector):
         self._frame = 0
         self._script: list[sv.Detections] | None = None
         self._period = period
+        #: Words this fake can actually find. None means it answers to
+        #: anything, which is convenient and unlike a real detector — a real
+        #: one returns nothing for a word that does not match the image.
+        self.known: set[str] | None = None
+        #: Confidence the synthetic boxes carry. Tests that leave this at the
+        #: default sit comfortably above every threshold in the pipeline,
+        #: which is exactly how a tracker gate at 0.35 went unnoticed for a
+        #: day. Lower it to test the low-confidence path.
+        self.base_conf: float = 0.9
 
     @property
     def classes(self) -> list[str] | None:
@@ -66,17 +75,22 @@ class FakeDetector(Detector):
         if not self._active:
             return empty_detections()
 
+        visible = [c for c in self._active
+                   if self.known is None or c in self.known]
+        if not visible:
+            return empty_detections()
+
         h, w = frame.shape[:2]
         boxes, confs, names = [], [], []
-        for k, cls in enumerate(self._active):
+        for k, cls in enumerate(visible):
             # Each class gets its own lane and phase, so two targets are
             # distinguishable and neither sits still.
-            phase = 2 * math.pi * ((i / self._period) + k / max(len(self._active), 1))
+            phase = 2 * math.pi * ((i / self._period) + k / max(len(visible), 1))
             cx = w * (0.5 + 0.3 * math.sin(phase))
             cy = h * (0.5 + 0.15 * math.cos(phase))
             bw, bh = w * 0.18, h * 0.3
             boxes.append([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2])
-            confs.append(0.9 - 0.05 * k)
+            confs.append(max(0.01, self.base_conf - 0.05 * k))
             names.append(cls)
 
         return sv.Detections(
