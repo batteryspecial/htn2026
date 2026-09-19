@@ -680,12 +680,19 @@
       .catch(function () { return []; });
   };
 
+  /* Stages come from /ws/status, not /ws/events. The pipeline's own event
+     vocabulary is richer than the old stage names (acquired, count_changed,
+     crossed, armed...), and server/legacy.py forwards only the ones with an
+     old equivalent, translated, on /ws/status. Listening to /ws/events instead
+     would put unknown names on the strip and miss the ones it draws. */
   PipelineClient.prototype.eventsUrl = function () {
-    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/events';
+    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/status';
   };
 
+  /* /ws/target is gone; /ws/state carries a StateView per frame, which holds
+     the behaviours and the tracks rather than a single flattened target. */
   PipelineClient.prototype.targetUrl = function () {
-    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/target';
+    return this.settings.pipelineBase.replace(/^http/, 'ws') + '/ws/state';
   };
 
   /* ---------- status socket (live mode only) ---------- */

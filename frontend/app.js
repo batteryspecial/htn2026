@@ -14,8 +14,14 @@
 
   /* TargetState.phase — level-triggered, one per frame. Only TRACKING drives. */
   var PHASE_CLASS = {
-    TRACKING: 'pass', ACQUIRING: 'pending', LOST: 'warn', NO_TARGET: 'warn',
-    FAULT: 'fail', BOOTING: 'idle', IDLE: 'idle', SWITCHING: 'pending', LOADING_MODEL: 'pending'
+    // behaviour states
+    TRACKING: 'pass', ACQUIRING: 'pending', EDGE: 'warn', LOST: 'warn',
+    SEARCHING: 'pending', ACTIVE: 'pass', ARMED: 'pass', ARMING: 'pending',
+    FIRED: 'warn', COOLDOWN: 'pending', GUIDING: 'pending', REACHED: 'pass',
+    LOCKED: 'pass', PAUSED: 'warn', FAILED: 'fail',
+    // service status, and the older pipeline phases
+    OK: 'pass', BOOTING: 'idle', NO_CAMERA: 'fail', FAULT: 'fail',
+    IDLE: 'idle', NO_TARGET: 'warn', SWITCHING: 'pending', LOADING_MODEL: 'pending'
   };
   var HISTORY_KEY = 'retask.history.v1';
   var HISTORY_MAX = 8;
@@ -641,23 +647,59 @@
     }
   }
 
-  /* One per frame off /ws/target. Level-triggered, so a dropped message
-     self-corrects; never used to drive the stage strip. */
+  /* One per frame off /ws/state. Level-triggered, so a dropped message
+     self-corrects; never used to drive the stage strip.
+
+     Two shapes are accepted. The pipeline publishes a StateView — behaviours
+     plus the tracks they matched — and older builds published a single
+     flattened TargetState. Reading both keeps the pane working across a
+     pipeline restart on either side of that change. */
   function onTargetState(st) {
-    if (!st || !st.phase) return;
-    if (st.phase !== lastPhase) {
-      lastPhase = st.phase;
-      el.phaseChip.className = 'badge ' + (PHASE_CLASS[st.phase] || 'idle');
-      el.phaseChip.textContent = st.phase;
+    if (!st) return;
+    var phase = null;
+    var readout = null;
+
+    if (Array.isArray(st.behaviors)) {
+      // A behaviour's own state is the phase worth showing; with several
+      // running, the one that has actually matched something wins.
+      var active = st.behaviors.filter(function (b) { return b.state === 'TRACKING'; })[0]
+        || st.behaviors.filter(function (b) { return (b.track_ids || []).length; })[0]
+        || st.behaviors[0];
+      if (active) {
+        phase = active.state;
+        var wanted = active.track_ids || [];
+        var track = (st.tracks || []).filter(function (t) {
+          return wanted.indexOf(t.track_id) !== -1;
+        })[0] || (wanted.length ? null : (st.tracks || [])[0]);
+        if (track) {
+          readout = [
+            track.label,
+            'cx ' + track.cx.toFixed(2),
+            'area ' + (track.area * 100).toFixed(1) + '%',
+            'conf ' + track.conf.toFixed(2)
+          ].join('  ·  ');
+        }
+        if (!readout && active.matches) readout = active.matches + ' match(es), no track yet';
+      }
+    } else if (st.phase) {
+      phase = st.phase;
+      if (st.visible) {
+        readout = [
+          st.label,
+          'cx ' + st.cx.toFixed(2),
+          'area ' + (st.area * 100).toFixed(1) + '%',
+          'conf ' + (st.conf || 0).toFixed(2)
+        ].filter(Boolean).join('  ·  ');
+      }
     }
-    var bits = [];
-    if (st.label) bits.push(st.label);
-    if (st.visible) {
-      bits.push('cx ' + st.cx.toFixed(2), 'area ' + (st.area * 100).toFixed(1) + '%');
-      if (typeof st.conf === 'number') bits.push('conf ' + st.conf.toFixed(2));
+
+    if (phase && phase !== lastPhase) {
+      lastPhase = phase;
+      el.phaseChip.className = 'badge ' + (PHASE_CLASS[phase] || 'idle');
+      el.phaseChip.textContent = phase;
     }
-    el.targetReadout.textContent = st.visible ? bits.join('  ·  ') : 'not visible';
-    el.targetReadout.classList.toggle('none', !st.visible);
+    el.targetReadout.textContent = readout || 'not visible';
+    el.targetReadout.classList.toggle('none', !readout);
   }
 
   /* ================= history ================= */
@@ -864,14 +906,18 @@
       }
       var h = r.health || {};
       el.pipeReadout.textContent = [
-        h.fps !== undefined ? h.fps + ' fps' : null,
+        h.fps !== undefined ? Math.round(h.fps) + ' fps' : null,
         h.model || null,
-        h.device || null
+        h.device || null,
+        h.behaviors ? h.behaviors + ' behaviour' + (h.behaviors === 1 ? '' : 's') : null,
+        h.camera_ok === false ? 'NO CAMERA' : null
       ].filter(Boolean).join('  ·  ');
-      // /ws/target is the live source; this only fills in before the first frame.
-      if (lastPhase === null && h.phase) {
-        el.phaseChip.className = 'badge ' + (PHASE_CLASS[h.phase] || 'idle');
-        el.phaseChip.textContent = h.phase;
+      // /ws/state is the live source; this only fills in before the first frame.
+      // `phase` was the old field, `status` is the current one.
+      var boot = h.phase || (h.status && h.status.toUpperCase());
+      if (lastPhase === null && boot) {
+        el.phaseChip.className = 'badge ' + (PHASE_CLASS[boot] || 'idle');
+        el.phaseChip.textContent = boot;
       }
     });
   }
