@@ -11,6 +11,7 @@ from __future__ import annotations
 from behaviors.base import Behavior, UnsupportedBehavior
 from behaviors.count_line import CountLine
 from behaviors.highlight import Highlight
+from behaviors.keyboard import Keyboard
 from behaviors.pan_to import PanTo
 from behaviors.pose_trigger import PoseTrigger
 from behaviors.privacy import Privacy
@@ -26,12 +27,6 @@ class NotYetBuilt(Behavior):
         raise UnsupportedBehavior(
             f"behaviour kind {self.spec.kind!r} is not implemented yet "
             f"({self.needs}). Available now: {sorted(BUILT)}")
-
-
-class Keyboard(NotYetBuilt):
-    kind = "keyboard"
-    states = ("SEARCHING", "LOCKED", "PAUSED")
-    needs = "needs OCR and the layout homography"
 
 
 KINDS: dict[str, type[Behavior]] = {

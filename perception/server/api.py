@@ -142,6 +142,23 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         svc.builder.clear()
         return {"cleared": True}
 
+    @app.post("/behaviors/{behavior_id}/advance", status_code=202)
+    async def advance_behavior(behavior_id: str):
+        """Step a `keyboard` in `step_mode: manual` to the next key.
+
+        A counter bump, not a mutation: the loop reads and clears it on the
+        next frame, so it stays the only thing that changes what is drawn.
+        """
+        behavior = svc.loop.behaviors.get(behavior_id)
+        if behavior is None:
+            return JSONResponse(status_code=404,
+                                content={"detail": f"no behaviour {behavior_id!r}"})
+        if not hasattr(behavior, "advance"):
+            return _reject(f"{behavior.kind!r} does not step; "
+                           f"only 'keyboard' in step_mode 'manual' does")
+        behavior.advance()
+        return {"advanced": behavior_id}
+
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
     async def set_model(choice: ModelChoice):

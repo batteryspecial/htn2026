@@ -64,8 +64,10 @@ second pose model is five lines of YAML.
 |---|---|---|
 | `detector` | `yoloe` (default, open vocab, masks), `coco`, `coco_trt`, `fake`, `scene` | YOLOE: `set_classes(names, get_text_pe(names))` in the loop, only when the prompt union changes. `scene` is `sweep: true`, reserved for `/describe` |
 | `embedder` | `clip` (open_clip ViT-B-32) | Attributes, reference matching, re-identification. DINOv2 is the upgrade if reference matching is weak |
-| `pose` | `pose` (`yolo11n-pose.pt`) — demo #11 | Loaded only while a gesture behavior is active |
-| `ocr` | — (EasyOCR, English, letter allowlist) — demo #17 | Worker thread only; not built |
+| `pose` | `pose` (`yolo11n-pose.pt`), `pose_fullbody` (`yolo11s-pose.pt`) — demo #11 | COCO-17. Loaded only while a gesture behavior is active |
+| `hands` | `hands` (MediaPipe Hands) | 21 landmarks/hand, CPU. Its own role, not a second `pose`: one model per role, and sharing would make `hand_raised` and `index_finger_raised` mutually exclusive |
+| `wholebody` | `wholebody` (RTMPose, COCO-WholeBody) | 133 points: body + feet + face + both hands. First 17 are COCO and the hand blocks are the 21-point topology, so `skills/wholebody.py` slices rather than reimplements |
+| `ocr` | `ocr` (EasyOCR, English, single-character allowlist) — demo #17 | Worker thread only: 150-400 ms, far too slow inline, so the model owns its thread and the loop takes the newest finished read |
 
 Anything that cannot run here — no CUDA, no weights, package not installed,
 type in the wrong role — reports `available: false` with a reason and the
@@ -113,7 +115,7 @@ raising (`has_role`), because behaviours ask every frame.
 | `privacy` ✅ | `keep_ref`, `mode: blur\|pixelate` | ACTIVE | — | 12 |
 | `pan_to` ✅ | `deg`, `hfov_deg: 70`, `tolerance_deg: 5` | GUIDING → REACHED | `reached` | 4 |
 | `pose_trigger` ✅ | `gesture: hand_raised`, `cooldown_s`, `hold_frames` | ACTIVE, PAUSED | `hand_raised` | 11 |
-| `keyboard` ⏳ needs OCR model | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
+| `keyboard` ✅ | `text`, `step_mode: all\|auto\|manual`, `step_s: 0.8` | SEARCHING → LOCKED ⇄ SEARCHING | `keyboard_locked`, `keyboard_lost`, `step` | 17 |
 
 Triggers for `watch`:
 `{"type":"missing","after_s":2}`, `{"type":"moved","min_shift":0.15}`, `{"type":"near","other":Selector,"margin":0.1}`, `{"type":"appeared","other":Selector}`.
@@ -195,7 +197,7 @@ System events use `behavior_id: null`: `model_switched`, `camera_lost`, `camera_
 
 ## Config
 
-`VIDEO_SOURCE` (URL | webcam index | file, files loop), `DEVICE`, `IMGSZ`, `PORT=8001`, `MODELS_CONFIG`, `CONF_THRESHOLD=0.25`, `LOG_LEVEL`.
+`VIDEO_SOURCE` (URL | webcam index | file, files loop), `DEVICE`, `IMGSZ`, `PORT=8001`, `MODELS_CONFIG`, `CONF_THRESHOLD=0.15`, `LOG_LEVEL`.
 
 ## Layout
 
@@ -221,17 +223,23 @@ perception/
 
 ## Build state
 
-**354 tests, no weights or GPU needed.** Built: the frame loop, capture, YOLOE,
+**423 tests, no weights or GPU needed.** Built: the frame loop, capture, YOLOE,
 ByteTrack, the declarative renderer, `/video`, the ops queue, `/behaviors`,
 events, CLIP attributes with include/exclude, `relate`, references, the model
 zoo, the virtual motor and guidance arrows, `pan_to` odometry, `describe()`,
-and seven of the eight behaviour kinds.
+and all eight behaviour kinds.
 
 Proven on recorded clips: `highlight`, `track` (including LOST → arrow held →
 reacquired by appearance), `watch`, `count_line`, retarget, multi-target.
 
-Outstanding: `keyboard` (needs OCR), `rfdetr` (a detector class), and real-clip
-runs for the kinds only unit-tested so far.
+**Every behaviour kind in the contract is now implemented**, so `kinds.planned`
+is empty; `NotYetBuilt` stays for whatever is added next.
+
+Outstanding: `rfdetr` (a detector class), and real-clip runs for the kinds only
+unit-tested so far. The four optional aux packages — `mediapipe`, `rtmlib`,
+`onnxruntime`, `easyocr` — are absent on the Mac, so `hands`, `wholebody` and
+`ocr` report `available: false` with a reason and everything still boots. What
+those models actually produce against a real camera is unverified.
 
 ## Build order (original)
 

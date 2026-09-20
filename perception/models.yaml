@@ -113,3 +113,15 @@ models:
     role: wholebody
     type: rtmpose_wholebody
     preload: false
+
+  # --- ocr -----------------------------------------------------------
+  # Reads characters off the frame for the keyboard skill. Unlike every other
+  # aux model this one is far too slow to run inline (150-400ms), so it keeps
+  # its own thread and the loop takes whatever read finished last.
+  #
+  # `easyocr` is optional, like mediapipe and rtmlib: without it the keyboard
+  # behaviour is paused with a reason and everything else still boots.
+  - name: ocr
+    role: ocr
+    type: easyocr
+    preload: false

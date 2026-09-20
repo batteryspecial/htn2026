@@ -209,10 +209,14 @@ class InferenceLoop:
             try:
                 t0 = time.perf_counter()
                 if role in ("pose", "hands", "wholebody"):
-                    # Both are keypoint models — (N, K, 3) in frame pixels,
-                    # only K differs — so everything downstream is shared.
-                    # ponytail: `ocr` will not be, and gets its own branch.
+                    # Keypoint models — (N, K, 3) in frame pixels, only K
+                    # differs — so everything downstream is shared.
                     out[role] = model.keypoints(frame)
+                elif role == "ocr":
+                    # The one aux model too slow to run inline. It keeps its
+                    # own thread; this hands over the newest frame and takes
+                    # the most recent finished read, neither of which blocks.
+                    out[role] = model.latest(frame)
                 self.timings.mark(role, time.perf_counter() - t0)
             except Exception:
                 log.exception("%s model failed", role)

@@ -102,6 +102,13 @@ def _mediapipe_hands(entry):
     return MediaPipeHands(entry.name)
 
 
+def _easyocr(entry):
+    from skills.ocr import EasyOCR
+
+    # No weights: easyocr fetches its own on first load.
+    return EasyOCR(entry.name)
+
+
 def _rtmpose_wholebody(entry):
     from skills.wholebody import RTMPoseWholeBody
 
@@ -120,6 +127,7 @@ KINDS: dict[str, Kind] = {
     "ultralytics_pose": Kind("pose", _ultralytics_pose, requires="ultralytics"),
     "mediapipe_hands": Kind("hands", _mediapipe_hands, requires="mediapipe"),
     "rtmpose_wholebody": Kind("wholebody", _rtmpose_wholebody, requires="rtmlib"),
+    "easyocr": Kind("ocr", _easyocr, requires="easyocr"),
 }
 
 

@@ -23,6 +23,9 @@ mediapipe
 # same reason as mediapipe. Also optional.
 rtmlib
 onnxruntime
+# Reads keys off the frame for the keyboard skill. Also optional, and the only
+# aux model heavy enough to need its own thread.
+easyocr
 
 # dev
 pytest

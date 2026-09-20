@@ -160,6 +160,14 @@ class Config:
     # rtmlib: lightweight | balanced | performance. `balanced` holds ~30fps on
     # CPU; drop to `lightweight` if the whole-body model starves the detector.
     WHOLEBODY_MODE: str = _env("WHOLEBODY_MODE", "balanced")
+    # OCR runs on its own thread, so this is how often it re-reads, not a cap
+    # on the frame rate. A keyboard does not move, so a few reads a second is
+    # plenty and anything faster just pins a core.
+    OCR_HZ: float = _f("OCR_HZ", 3.0)
+    # Single characters only, so a wrong read is a badge on the wrong key.
+    # Higher than the detector's cutoff on purpose: there is no tracker
+    # downstream to filter a bad one out.
+    OCR_MIN_CONF: float = _f("OCR_MIN_CONF", 0.5)
 
     # 5. Server
     HOST: str = _env("HOST", "0.0.0.0")
