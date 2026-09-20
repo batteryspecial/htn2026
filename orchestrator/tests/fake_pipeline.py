@@ -81,7 +81,10 @@ class FakePipeline:
                  "available": True, "open_vocab": True},
                 {"name": "coco", "role": "detector", "active": False,
                  "available": True, "open_vocab": False},
-            ]
+            ],
+            # What perception reports from skills/pose.py. Set to [] to stand in
+            # for a machine with no pose model loaded.
+            "gestures": ["hand_raised"],
         }
         self.hud = ""
 

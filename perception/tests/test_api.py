@@ -79,17 +79,18 @@ def test_a_malformed_behavior_is_rejected(client, bad):
     assert client.post("/behaviors", json=bad).status_code == 422
 
 
-def test_an_unimplemented_kind_says_what_is_available(client):
-    r = client.post("/behaviors", json=spec(kind="keyboard", detect=("keyboard",)))
-    assert r.status_code == 422
-    assert "not implemented" in r.json()["detail"]
-    assert "highlight" in r.json()["detail"]
+def test_every_kind_in_the_contract_is_implemented(client):
+    """`keyboard` was the last one. Nothing in the contract is a promise the
+    service cannot keep any more, so `planned` is empty."""
+    kinds = client.get("/behaviors").json()["kinds"]
+    assert kinds["planned"] == []
+    assert "keyboard" in kinds["available"]
 
 
 def test_a_rejected_behavior_never_starts(client):
     client.post("/behaviors", json=spec())
     client.rig.settle()
-    client.post("/behaviors", json=spec(kind="keyboard"))
+    client.post("/behaviors", json=spec(kind="keyboard"))  # no 'text': refused
     client.rig.settle()
     client.rig.frames(3, seen=boxes(THING))
     assert len(client.rig.loop.behaviors) == 1
@@ -135,7 +136,7 @@ def test_listing_shows_what_is_running_and_what_is_planned(client):
     d = client.get("/behaviors").json()
     assert len(d["behaviors"]) == 1
     assert "highlight" in d["kinds"]["available"]
-    assert "keyboard" in d["kinds"]["planned"]
+    assert d["kinds"]["planned"] == []
 
 
 # 3. Model ----------------------------------------------------------------
@@ -145,6 +146,33 @@ def test_models_lists_availability(client):
     assert by_name["fake"]["available"] is True
     assert by_name["gpu_only"]["available"] is False
     assert "reason" in by_name["gpu_only"] and d["device"]
+
+
+def test_models_reports_which_gestures_exist(client, monkeypatch):
+    """The agent has to tell "no gestures at all" from "not that gesture".
+
+    It cannot get this from the kind catalogue, which only says `pose_trigger`
+    exists. Asked to report a raised *index finger*, the compiler then has to
+    fill in a `gesture` param and settles for the nearest implemented value —
+    the spec validates, the behaviour arms, and it never fires because the
+    rule it actually installed watches wrists. Reporting the vocabulary is
+    what lets it say "I only have hand_raised" instead.
+    """
+    # The rig loads no aux model at all, so no gesture can be observed.
+    assert client.get("/models").json()["gestures"] == []
+
+    # The list spans roles and narrows to what is loaded. With only a body
+    # model, a finger gesture is still not on offer — reporting it would have
+    # the agent install a behaviour that can never fire.
+    monkeypatch.setattr(client.rig.registry, "has_role", lambda role: role == "pose")
+    body_only = client.get("/models").json()["gestures"]
+    assert "hand_raised" in body_only
+    assert "index_finger_raised" not in body_only
+
+    monkeypatch.setattr(client.rig.registry, "has_role", lambda role: role == "hands")
+    hands_only = client.get("/models").json()["gestures"]
+    assert "index_finger_raised" in hands_only
+    assert "hand_raised" not in hands_only
 
 
 def test_the_model_can_be_swapped(client):

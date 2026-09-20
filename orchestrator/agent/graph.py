@@ -82,13 +82,18 @@ def build_graph(perception: Perception, memory: PhraseMemory):
         health_data = {k: v for k, v in health.items() if k != "ok"} if health["ok"] else None
 
         open_vocab = True
+        # None, not [], until the pipeline answers: "we did not ask" and "there
+        # are no gestures" read the same to the model otherwise, and the second
+        # one is a claim we have not earned.
+        gestures: list[str] | None = None
         models = await perception.models()
         if models["ok"]:
             active = next((m for m in models.get("models", []) if m.get("active")), None)
             if active:
                 open_vocab = active.get("open_vocab", True) is not False
+            gestures = models.get("gestures", [])
 
-        lines = [situation(behaviors, health_data, open_vocab)]
+        lines = [situation(behaviors, health_data, open_vocab, gestures)]
 
         if not health["ok"]:
             lines.append(

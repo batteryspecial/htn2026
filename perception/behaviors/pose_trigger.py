@@ -15,7 +15,8 @@ import numpy as np
 
 from behaviors.base import Behavior, Frame, Outcome
 from render.layers import Alert, Boxes
-from skills.pose import GESTURES, detect_gesture, person_box
+from skills import gestures
+from skills.pose import person_box
 
 #: Frames a gesture must hold before it counts. A hand passing through the
 #: raised position on its way somewhere else is not a raised hand.
@@ -29,9 +30,12 @@ class PoseTrigger(Behavior):
     kind = "pose_trigger"
     states = ("ACTIVE", "PAUSED")
     initial = "ACTIVE"
-    emits = ("hand_raised",)
-    #: Without a pose model this behaviour cannot do anything, so the registry
-    #: pauses it with a reason rather than letting it sit looking healthy.
+    emits = tuple(gestures.known())
+    #: Replaced per instance in `validate()`, because which model this needs
+    #: depends on the gesture asked for and not on the kind: a body gesture
+    #: needs `pose`, a finger gesture needs `hands`. Without that model the
+    #: registry pauses the behaviour with a reason rather than letting it sit
+    #: looking healthy.
     needs_roles = ("pose",)
 
     def __init__(self, *a, **kw) -> None:
@@ -42,21 +46,26 @@ class PoseTrigger(Behavior):
 
     def validate(self) -> None:
         self.gesture = self.param("gesture", "hand_raised")
-        if self.gesture not in GESTURES:
+        if self.gesture not in gestures.ROLE_OF:
             raise ValueError(
-                f"unknown gesture {self.gesture!r}; known: {sorted(GESTURES)}")
+                f"unknown gesture {self.gesture!r}; known: {gestures.known()}")
+        # Per instance, not per kind: "raise your hand" reads body keypoints
+        # and "raise your index finger" reads hand landmarks, and asking for
+        # one must not require the other's model to be loaded.
+        self.role = gestures.ROLE_OF[self.gesture]
+        self.needs_roles = (self.role,)
         self.cooldown_s = float(self.param("cooldown_s", COOLDOWN_S))
         self.hold_frames = int(self.param("hold_frames", HOLD_FRAMES))
 
     # 1. Per frame ------------------------------------------------------
     def on_frame(self, frame: Frame, idx: np.ndarray, outcome: Outcome) -> None:
-        keypoints = frame.skills.get("pose")
+        keypoints = frame.skills.get(self.role)
         if keypoints is None:
-            # The pose model has not produced anything yet this frame.
+            # The model this gesture reads has not produced anything yet.
             self.data["people"] = 0
             return
 
-        doing = detect_gesture(keypoints, self.gesture)
+        doing = gestures.detect(keypoints, self.gesture)
         doing = [i for i in doing if self._is_subject(frame, idx, keypoints[i])]
         self.data.update(people=int(len(keypoints)), gesturing=len(doing))
 

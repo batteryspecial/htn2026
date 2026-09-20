@@ -15,6 +15,17 @@ supervision==0.30.4
 open_clip_torch
 # YOLOE's text encoder; ultralytics auto-installs it, but not inside a venv without pip
 clip @ git+https://github.com/ultralytics/CLIP.git
+# Hand landmarks, for finger gestures. CPU only, and deliberately not pinned to
+# torch: it leaves the GPU to the detector. Optional — without it the `hands`
+# entry in models.yaml reports unavailable and everything else still boots.
+mediapipe
+# Whole-body keypoints (133: body + feet + face + both hands). ONNX on CPU,
+# same reason as mediapipe. Also optional.
+rtmlib
+onnxruntime
+# Reads keys off the frame for the keyboard skill. Also optional, and the only
+# aux model heavy enough to need its own thread.
+easyocr
 
 # dev
 pytest

@@ -50,6 +50,7 @@ from runtime.health import Health
 from runtime.loop import InferenceLoop
 from runtime.workers import Builder
 from server.debug_page import DEBUG_PAGE
+from skills import gestures as gesture_vocab
 
 log = logging.getLogger("perception.api")
 
@@ -141,6 +142,23 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         svc.builder.clear()
         return {"cleared": True}
 
+    @app.post("/behaviors/{behavior_id}/advance", status_code=202)
+    async def advance_behavior(behavior_id: str):
+        """Step a `keyboard` in `step_mode: manual` to the next key.
+
+        A counter bump, not a mutation: the loop reads and clears it on the
+        next frame, so it stays the only thing that changes what is drawn.
+        """
+        behavior = svc.loop.behaviors.get(behavior_id)
+        if behavior is None:
+            return JSONResponse(status_code=404,
+                                content={"detail": f"no behaviour {behavior_id!r}"})
+        if not hasattr(behavior, "advance"):
+            return _reject(f"{behavior.kind!r} does not step; "
+                           f"only 'keyboard' in step_mode 'manual' does")
+        behavior.advance()
+        return {"advanced": behavior_id}
+
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
     async def set_model(choice: ModelChoice):
@@ -169,9 +187,19 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         """What this machine can do. The agent's device manifest.
 
         `roles` is the quick answer to "is a gesture trigger possible at all"
-        without reading the whole model list.
+        without reading the whole model list. `gestures` is the next question
+        down — *which* ones — and it has to be reported rather than written
+        into the agent's prompt, because the vocabulary is code: whatever
+        `skills/` implements, gated by which aux models are loaded here.
+
+        It spans roles. A body gesture needs `pose` and a finger gesture needs
+        `hands`, so this list narrows to what this machine can actually
+        observe: a rule whose model is missing is not a capability, and
+        reporting it would have the agent install a behaviour that can never
+        fire.
         """
         return {"models": svc.registry.manifest(), "roles": svc.registry.roles(),
+                "gestures": gesture_vocab.available(svc.registry.has_role),
                 "device": resolve_device()}
 
     # 3. Introspection ---------------------------------------------------

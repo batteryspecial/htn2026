@@ -72,9 +72,56 @@ models:
     weights: yolo11n-pose.pt
     preload: false
 
-  # A second pose model is exactly this: one more entry. Uncomment to make it
-  # selectable with POST /model {"name": "pose_fullbody", "role": "pose"}.
-  # - name: pose_fullbody
-  #   role: pose
-  #   type: ultralytics_pose
-  #   weights: yolo11s-pose.pt
+  # The same 17 COCO keypoints from a larger checkpoint: more accurate at
+  # distance and on partly hidden people, ~1.5x the time. Selectable with
+  # POST /model {"name": "pose_fullbody", "role": "pose"}, and every gesture
+  # rule works against it unchanged, because the keypoint order is the same.
+  - name: pose_fullbody
+    role: pose
+    type: ultralytics_pose
+    weights: yolo11s-pose.pt
+    preload: false
+
+  # --- hands ---------------------------------------------------------
+  # MediaPipe Hands: 21 landmarks per hand, CPU at ~30fps, no weights file and
+  # no GPU contention with the detector. Its own role rather than a second
+  # pose model on purpose — one model per role is active at a time, so sharing
+  # would make "raise your hand" and "raise your index finger" mutually
+  # exclusive, and both want to run.
+  #
+  # `mediapipe` is not in requirements.txt: without it this entry reports
+  # available: false with a reason and everything else still boots.
+  - name: hands
+    role: hands
+    type: mediapipe_hands
+    preload: false
+
+  # --- wholebody -----------------------------------------------------
+  # RTMPose in the COCO-WholeBody layout: 133 points — body, feet, face and
+  # both hands from one pass. ONNX on CPU, so it leaves the GPU to the
+  # detector, and it fetches its own weights on first load.
+  #
+  # Its own role rather than a `pose` entry because the roles are a contract
+  # about keypoint layout, not just about what a model can see: everything in
+  # `pose` is COCO-17, and a behaviour asking for a body gesture would index
+  # 133 points as if they were 17. The first 17 here *are* COCO, which is why
+  # skills/wholebody.py slices rather than reimplements.
+  #
+  # `rtmlib` is optional, like mediapipe: without it this reports
+  # available: false with a reason and everything else still boots.
+  - name: wholebody
+    role: wholebody
+    type: rtmpose_wholebody
+    preload: false
+
+  # --- ocr -----------------------------------------------------------
+  # Reads characters off the frame for the keyboard skill. Unlike every other
+  # aux model this one is far too slow to run inline (150-400ms), so it keeps
+  # its own thread and the loop takes whatever read finished last.
+  #
+  # `easyocr` is optional, like mediapipe and rtmlib: without it the keyboard
+  # behaviour is paused with a reason and everything else still boots.
+  - name: ocr
+    role: ocr
+    type: easyocr
+    preload: false
