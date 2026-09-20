@@ -1,0 +1,33 @@
+/* TTC Dupont station.
+   Sutherland's 1978 concentric-circle mosaic (rust / ochre / oxblood on cream)
+   for the wall, TTC signage conventions for everything else: black bands,
+   white plates, tight uppercase caps, hard rectangles. No gradients, no radii.
+   The only circles are tile motifs and line-diagram station markers. */
+
+:root {
+  /* Dupont mosaic */
+  --tile: #f4efe3;
+  --tile-dim: #e7e1d4;
+  --grout: #d5cdbc;
+  --rust: #d9541c;
+  --ochre: #e9a422;
+  --oxblood: #8f3216;
+  --amber: #f2b52e;
+
+  /* TTC signage */
+  --ink: #141414;
+  --ink-2: #55503f;
+  --ink-3: #8a836f;
+  --plate: #ffffff;
+  --ttc-red: #da291c;
+  --green: #2f8f4e;
+
+  --ttc: "Helvetica Neue", Helvetica, Univers, "Liberation Sans", Arial, sans-serif;
+  --mono: ui-monospace, Consolas, "Cascadia Mono", "Courier New", monospace;
+
+  /* the station wall */
+  --wall: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'%3E%3Crect width='120' height='120' fill='%23f4efe3'/%3E%3Cg fill='none' stroke-width='9'%3E%3Ccircle cx='60' cy='60' r='40' stroke='%23d9541c'/%3E%3Ccircle cx='60' cy='60' r='26' stroke='%23e9a422'/%3E%3Ccircle cx='60' cy='60' r='12' stroke='%238f3216'/%3E%3Ccircle cx='0' cy='0' r='40' stroke='%23e9a422'/%3E%3Ccircle cx='120' cy='0' r='40' stroke='%23e9a422'/%3E%3Ccircle cx='0' cy='120' r='40' stroke='%23e9a422'/%3E%3Ccircle cx='120' cy='120' r='40' stroke='%23e9a422'/%3E%3Ccircle cx='0' cy='0' r='22' stroke='%23d9541c'/%3E%3Ccircle cx='120' cy='0' r='22' stroke='%23d9541c'/%3E%3Ccircle cx='0' cy='120' r='22' stroke='%23d9541c'/%3E%3Ccircle cx='120' cy='120' r='22' stroke='%23d9541c'/%3E%3C/g%3E%3Cpath d='M0 20H120M0 40H120M0 60H120M0 80H120M0 100H120M20 0V120M40 0V120M60 0V120M80 0V120M100 0V120' stroke='%23ffffff' stroke-opacity='0.45' stroke-width='2'/%3E%3C/svg%3E");
+
+  /* platform floor */
+  --floor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='44' height='44' viewBox='0 0 44 44'%3E%3Crect width='44' height='44' fill='%23e7e1d4'/%3E%3Cpath d='M0 0H44M0 0V44' stroke='%23d5cdbc' stroke-width='2'/%3E%3C/svg%3E");
+}

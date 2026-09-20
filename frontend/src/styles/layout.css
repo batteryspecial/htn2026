@@ -1,0 +1,137 @@
+/* ---------- platform wall / fascia ---------- */
+
+.topbar {
+  flex: 0 0 auto;
+  min-height: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  background: var(--wall) repeat;
+  border-bottom: 6px solid var(--ink);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--plate);
+  border: 3px solid var(--ink);
+  padding: 10px 22px 10px 16px;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 50% !important;
+  background: var(--rust);
+  box-shadow: inset 0 0 0 5px var(--plate), inset 0 0 0 9px var(--ochre);
+}
+
+.brand-text {
+  font-weight: 700;
+  font-size: 30px;
+  letter-spacing: -0.015em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* ---------- columns ---------- */
+
+/* Two independent columns rather than a 2x2 grid: the camera and the output
+   panel want to stretch, the instruction and history panels want their content
+   height, and shared grid rows force those to fight. */
+.grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.col-left { flex: 1.15 1 0; }
+.col-right { flex: 1 1 0; }
+
+.panel {
+  background: var(--plate);
+  border: 3px solid var(--ink);
+  padding: 0 18px 18px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.panel-video { flex: 1 1 0; min-height: 320px; }
+.panel-input { flex: 0 0 auto; }
+.panel-output { flex: 1 1 0; min-height: 0; }
+.panel-history { flex: 0 0 auto; min-height: 0; max-height: 26vh; }
+.panel-live { flex: 0 0 auto; min-height: 0; max-height: 34vh; }
+
+/* black signage band across the head of every panel */
+.panel-title {
+  margin: 0 -18px 16px;
+  padding: 9px 18px;
+  background: var(--ink);
+  color: var(--plate);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--ochre);
+  padding: 1px 8px;
+}
+
+/* two panels side by side inside a column */
+.panel-row {
+  display: flex;
+  gap: 16px;
+  min-height: 0;
+  flex: 0 0 auto;
+}
+
+.panel-row > .panel { flex: 1 1 0; min-width: 0; }
+
+.panel-scroll {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---------- narrow / stacked ---------- */
+
+@media (max-width: 1100px) {
+  .grid { flex-direction: column; overflow: auto; }
+  .col-left, .col-right { flex: 0 0 auto; }
+  .panel-video { min-height: 46vh; }
+  .panel-output { min-height: 60vh; }
+  .panel-history, .panel-live { max-height: none; }
+  .panel-row { flex-direction: column; }
+  body { overflow: auto; }
+  #root { height: auto; min-height: 100%; }
+  .brand-text { font-size: 22px; }
+}

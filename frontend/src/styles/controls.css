@@ -1,0 +1,179 @@
+/* ---------- buttons ---------- */
+
+.btn {
+  font-family: var(--ttc);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 12px 22px;
+  border: 3px solid var(--ink);
+  background: var(--plate);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn.primary { background: var(--rust); color: var(--plate); }
+.btn.primary:hover { background: var(--oxblood); }
+.btn.ghost:hover { background: var(--ochre); }
+.btn.stop { background: var(--ttc-red); color: var(--plate); }
+.btn.stop:hover { background: var(--oxblood); }
+.btn:disabled {
+  background: var(--tile-dim);
+  color: var(--ink-3);
+  border-color: var(--ink-3);
+  cursor: not-allowed;
+}
+.btn.busy { opacity: 0.55; pointer-events: none; }
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.icon-btn {
+  font-family: var(--ttc);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+  background: var(--plate);
+  border: 3px solid var(--ink);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.icon-btn:hover { background: var(--ochre); }
+.icon-btn[aria-pressed="false"] { background: var(--tile-dim); color: var(--ink-3); }
+
+.title-btn {
+  margin-left: auto;
+  font-family: var(--ttc);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  background: var(--plate);
+  color: var(--ink);
+  border: 2px solid var(--plate);
+  padding: 2px 9px;
+  cursor: pointer;
+}
+
+.title-btn:hover { background: var(--ochre); border-color: var(--ochre); }
+
+.pill {
+  font-family: var(--ttc);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 8px 16px;
+  border: 3px solid var(--ink);
+  background: var(--ochre);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.pill.live { background: var(--rust); color: var(--plate); }
+.pill.openai { background: var(--oxblood); color: var(--plate); }
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.chip {
+  font-family: var(--ttc);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--tile);
+  border: 2px solid var(--ink);
+  padding: 7px 12px;
+  cursor: pointer;
+}
+
+.chip:hover { background: var(--ochre); }
+
+/* ---------- status ---------- */
+
+.badge {
+  font-family: var(--ttc);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 3px 11px;
+  border: 2px solid var(--plate);
+  background: var(--ink);
+  color: var(--plate);
+  white-space: nowrap;
+}
+
+.badge.idle { color: var(--ink-3); border-color: var(--ink-3); }
+.badge.pass { background: var(--plate); color: var(--ink); }
+.badge.fail { background: var(--ttc-red); color: var(--plate); border-color: var(--plate); }
+.badge.warn { background: var(--ochre); color: var(--ink); border-color: var(--plate); }
+.badge.pending { background: var(--rust); color: var(--plate); border-color: var(--plate); }
+
+.health {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--plate);
+  border: 3px solid var(--ink);
+  padding: 8px 14px;
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.hdot {
+  width: 13px;
+  height: 13px;
+  border-radius: 50% !important;
+  background: var(--ink-3);
+  border: 2px solid var(--ink);
+  flex: 0 0 auto;
+}
+
+.hdot.up { background: var(--green); }
+.hdot.down { background: var(--ttc-red); }
+.hdot.mock { background: var(--ochre); }
+
+/* ---------- notices ---------- */
+
+.notices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+  max-height: 22vh;
+  overflow: auto;
+}
+
+.notice {
+  font-family: var(--ttc);
+  font-size: 14px;
+  font-weight: 500;
+  border-left: 8px solid var(--ink-3);
+  padding: 8px 12px;
+  background: var(--tile);
+  color: var(--ink);
+}
+
+.notice.error { border-left-color: var(--ttc-red); background: #f8e2e0; }
+.notice.warn { border-left-color: var(--ochre); background: #faf0d8; }
+.notice.ask {
+  border-left-color: var(--rust);
+  background: #fae7dc;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.notice .path { font-family: var(--mono); font-weight: 700; margin-right: 8px; }

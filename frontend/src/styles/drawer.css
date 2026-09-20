@@ -1,0 +1,77 @@
+.drawer-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 20, 20, 0.55);
+  z-index: 9;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(470px, 92vw);
+  background: var(--plate);
+  border-left: 6px solid var(--ink);
+  padding: 0 20px 20px;
+  z-index: 10;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.drawer .panel-title { margin: 0 -20px 4px; padding: 12px 20px; }
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.field > span {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.field input[type="text"],
+.field select {
+  background: var(--tile);
+  border: 3px solid var(--ink);
+  color: var(--ink);
+  padding: 11px 13px;
+  font-family: var(--mono);
+  font-size: 14px;
+  outline: none;
+}
+
+.field input[type="text"]:focus,
+.field select:focus { box-shadow: inset 0 0 0 3px var(--ochre); }
+
+.field small { color: var(--ink-2); font-size: 12px; }
+
+.field.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+
+.field.checkbox input { width: 20px; height: 20px; accent-color: var(--rust); }
+
+.field.checkbox > span {
+  text-transform: none;
+  font-size: 15px;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+
+.drawer-hint { margin-top: auto; }

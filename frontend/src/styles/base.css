@@ -1,0 +1,52 @@
+* { box-sizing: border-box; border-radius: 0 !important; }
+
+[hidden] { display: none !important; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  background: var(--floor) repeat;
+  color: var(--ink);
+  font-family: var(--ttc);
+  font-size: 17px;
+  line-height: 1.4;
+  overflow: hidden;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 11px;
+  border: 2px solid var(--ink);
+  padding: 1px 5px;
+  color: var(--ink);
+  background: var(--tile);
+}
+
+code {
+  font-family: var(--mono);
+  color: var(--oxblood);
+}
+
+.hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+}
+
+.mono { font-family: var(--mono); }
+
+.title-note {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  text-transform: none;
+}
