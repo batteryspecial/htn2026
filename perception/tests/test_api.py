@@ -12,7 +12,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.api import Service, create_app
-from skills.pose import GESTURES
 from tests.rig import Rig, boxes
 
 THING = ("thing", 320, 240, 100)
@@ -158,13 +157,21 @@ def test_models_reports_which_gestures_exist(client, monkeypatch):
     rule it actually installed watches wrists. Reporting the vocabulary is
     what lets it say "I only have hand_raised" instead.
     """
-    # The rig loads no pose model, so no gesture can be observed at all.
+    # The rig loads no aux model at all, so no gesture can be observed.
     assert client.get("/models").json()["gestures"] == []
 
+    # The list spans roles and narrows to what is loaded. With only a body
+    # model, a finger gesture is still not on offer — reporting it would have
+    # the agent install a behaviour that can never fire.
     monkeypatch.setattr(client.rig.registry, "has_role", lambda role: role == "pose")
-    gestures = client.get("/models").json()["gestures"]
-    assert "hand_raised" in gestures
-    assert set(gestures) == set(GESTURES), "every implemented rule must be offered"
+    body_only = client.get("/models").json()["gestures"]
+    assert "hand_raised" in body_only
+    assert "index_finger_raised" not in body_only
+
+    monkeypatch.setattr(client.rig.registry, "has_role", lambda role: role == "hands")
+    hands_only = client.get("/models").json()["gestures"]
+    assert "index_finger_raised" in hands_only
+    assert "hand_raised" not in hands_only
 
 
 def test_the_model_can_be_swapped(client):

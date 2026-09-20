@@ -78,3 +78,17 @@ models:
   #   role: pose
   #   type: ultralytics_pose
   #   weights: yolo11s-pose.pt
+
+  # --- hands ---------------------------------------------------------
+  # MediaPipe Hands: 21 landmarks per hand, CPU at ~30fps, no weights file and
+  # no GPU contention with the detector. Its own role rather than a second
+  # pose model on purpose — one model per role is active at a time, so sharing
+  # would make "raise your hand" and "raise your index finger" mutually
+  # exclusive, and both want to run.
+  #
+  # `mediapipe` is not in requirements.txt: without it this entry reports
+  # available: false with a reason and everything else still boots.
+  - name: hands
+    role: hands
+    type: mediapipe_hands
+    preload: false

@@ -207,8 +207,11 @@ EventType = Literal[
     "acquired", "lost", "reacquired",
     # watch
     "armed", "missing", "moved", "near", "appeared",
-    # count_line / pan_to / pose
-    "crossed", "reached", "hand_raised",
+    # count_line / pan_to
+    "crossed", "reached",
+    # pose_trigger: one type per gesture, so the agent can subscribe to the
+    # one it installed. Body gestures read `pose`, finger gestures `hands`.
+    "hand_raised", "index_finger_raised", "open_palm", "fist",
     # keyboard
     "keyboard_locked", "keyboard_lost", "step",
     # system, with behavior_id null

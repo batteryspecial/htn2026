@@ -208,8 +208,11 @@ class InferenceLoop:
                 continue
             try:
                 t0 = time.perf_counter()
-                if role == "pose":
-                    out["pose"] = model.keypoints(frame)
+                if role in ("pose", "hands"):
+                    # Both are keypoint models — (N, K, 3) in frame pixels,
+                    # only K differs — so everything downstream is shared.
+                    # ponytail: `ocr` will not be, and gets its own branch.
+                    out[role] = model.keypoints(frame)
                 self.timings.mark(role, time.perf_counter() - t0)
             except Exception:
                 log.exception("%s model failed", role)

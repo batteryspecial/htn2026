@@ -30,10 +30,14 @@ from typing import Any, Literal
 #: embedder  turns crops and phrases into comparable vectors: attributes,
 #:           reference matching, re-identification.
 #: pose      body keypoints, for gesture triggers.
+#: hands     hand landmarks, for finger gestures. Separate from `pose` because
+#:           one model per role is active at a time, and sharing the role
+#:           would make "raise your hand" and "raise your index finger"
+#:           mutually exclusive.
 #: ocr       reads text in the frame, for the keyboard skill.
-Role = Literal["detector", "embedder", "pose", "ocr"]
+Role = Literal["detector", "embedder", "pose", "hands", "ocr"]
 
-ROLES: tuple[Role, ...] = ("detector", "embedder", "pose", "ocr")
+ROLES: tuple[Role, ...] = ("detector", "embedder", "pose", "hands", "ocr")
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,13 @@ def _ultralytics_pose(entry):
     return UltralyticsPose(entry.name, entry.weights_path)
 
 
+def _mediapipe_hands(entry):
+    from skills.hands import MediaPipeHands
+
+    # No weights: the graph ships inside the package.
+    return MediaPipeHands(entry.name)
+
+
 #: type -> how to build it. Adding a model family is one entry here plus a
 #: class in the folder its role belongs to.
 KINDS: dict[str, Kind] = {
@@ -96,6 +107,7 @@ KINDS: dict[str, Kind] = {
     "open_clip": Kind("embedder", _open_clip, requires="open_clip"),
     "hash_encoder": Kind("embedder", _hash_encoder),
     "ultralytics_pose": Kind("pose", _ultralytics_pose, requires="ultralytics"),
+    "mediapipe_hands": Kind("hands", _mediapipe_hands, requires="mediapipe"),
 }
 
 
