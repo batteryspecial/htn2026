@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.api import Service, create_app
+from skills.pose import GESTURES
 from tests.rig import Rig, boxes
 
 THING = ("thing", 320, 240, 100)
@@ -145,6 +146,25 @@ def test_models_lists_availability(client):
     assert by_name["fake"]["available"] is True
     assert by_name["gpu_only"]["available"] is False
     assert "reason" in by_name["gpu_only"] and d["device"]
+
+
+def test_models_reports_which_gestures_exist(client, monkeypatch):
+    """The agent has to tell "no gestures at all" from "not that gesture".
+
+    It cannot get this from the kind catalogue, which only says `pose_trigger`
+    exists. Asked to report a raised *index finger*, the compiler then has to
+    fill in a `gesture` param and settles for the nearest implemented value —
+    the spec validates, the behaviour arms, and it never fires because the
+    rule it actually installed watches wrists. Reporting the vocabulary is
+    what lets it say "I only have hand_raised" instead.
+    """
+    # The rig loads no pose model, so no gesture can be observed at all.
+    assert client.get("/models").json()["gestures"] == []
+
+    monkeypatch.setattr(client.rig.registry, "has_role", lambda role: role == "pose")
+    gestures = client.get("/models").json()["gestures"]
+    assert "hand_raised" in gestures
+    assert set(gestures) == set(GESTURES), "every implemented rule must be offered"
 
 
 def test_the_model_can_be_swapped(client):

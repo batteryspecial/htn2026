@@ -50,6 +50,7 @@ from runtime.health import Health
 from runtime.loop import InferenceLoop
 from runtime.workers import Builder
 from server.debug_page import DEBUG_PAGE
+from skills.pose import GESTURES
 
 log = logging.getLogger("perception.api")
 
@@ -169,9 +170,17 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         """What this machine can do. The agent's device manifest.
 
         `roles` is the quick answer to "is a gesture trigger possible at all"
-        without reading the whole model list.
+        without reading the whole model list. `gestures` is the next question
+        down — *which* ones — and it has to be reported rather than written
+        into the agent's prompt, because the vocabulary is code: it is whatever
+        `skills/pose.py` implements, and it grows when a pose model does.
+
+        Empty when no pose model is loaded: a gesture the device cannot
+        observe is not a capability, and the agent needs to tell "no gestures
+        at all" apart from "not that gesture".
         """
         return {"models": svc.registry.manifest(), "roles": svc.registry.roles(),
+                "gestures": sorted(GESTURES) if svc.registry.has_role("pose") else [],
                 "device": resolve_device()}
 
     # 3. Introspection ---------------------------------------------------

@@ -122,7 +122,8 @@ class PanOdometry:
             # aperture and put a cross-shaped artefact through the correlation
             # peak. Hanning tapers them away.
             self._window = cv2.createHanningWindow(
-                (out.shape[1], out.shape[0]), cv2.CV_32F)
+                (out.shape[1], out.shape[0]), cv2.CV_32F
+            )
         # Windowed here, once, into a fresh array, so the frame we keep as the
         # reference is never mutated by OpenCV.
         return out * self._window

@@ -17,5 +17,4 @@ from render.layers import Layer
 class Actuator(Protocol):
     """Takes what the tracker wants, returns whatever should be drawn."""
 
-    def command(self, motor: MotorCommand | None, shape: tuple[int, int],
-                now: float) -> list[Layer]: ...
+    def command(self, motor: MotorCommand | None, shape: tuple[int, int], now: float) -> list[Layer]: ...

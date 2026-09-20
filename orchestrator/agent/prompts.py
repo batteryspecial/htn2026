@@ -123,8 +123,15 @@ def system_prompt() -> str:
 
 
 def situation(behaviors: list[dict], health: dict | None,
-              open_vocab: bool = True) -> str:
-    """What is true right now. Rebuilt every turn, unlike the system prompt."""
+              open_vocab: bool = True,
+              gestures: list[str] | None = None) -> str:
+    """What is true right now. Rebuilt every turn, unlike the system prompt.
+
+    `gestures` is reported here rather than written into BEHAVIORS.md because
+    it is code, not prose: whatever `skills/pose.py` implements, which grows
+    when a pose model does. `None` means the pipeline did not answer, which is
+    not the same as an empty list and must not be reported as one.
+    """
     lines: list[str] = []
 
     if behaviors:
@@ -153,5 +160,24 @@ def situation(behaviors: list[dict], health: dict | None,
             + f". {health.get('fps', 0):.0f} fps."
             + ("" if health.get("camera_ok", True) else " CAMERA IS DOWN.")
         )
+
+    # The same shape of warning as FIXED VOCABULARY above: a thing the device
+    # cannot do, said plainly, before the model compiles a spec that assumes
+    # it can. Knowing only that `pose_trigger` exists is what makes "report a
+    # raised index finger" turn into hand_raised — the nearest value that is
+    # implemented. It validates, it arms, and it never fires.
+    if gestures is not None:
+        if gestures:
+            lines.append(
+                f"Gestures pose_trigger can actually detect: {', '.join(sorted(gestures))}"
+                f" — these and no others. If the operator asks for a different one,"
+                f" tell them which you have instead. Do not install the nearest"
+                f" match and report it as done."
+            )
+        else:
+            lines.append(
+                "No pose model is loaded, so pose_trigger cannot fire at all. "
+                "Say so rather than installing one."
+            )
 
     return "\n".join(lines)
