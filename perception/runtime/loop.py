@@ -208,7 +208,7 @@ class InferenceLoop:
                 continue
             try:
                 t0 = time.perf_counter()
-                if role in ("pose", "hands"):
+                if role in ("pose", "hands", "wholebody"):
                     # Both are keypoint models — (N, K, 3) in frame pixels,
                     # only K differs — so everything downstream is shared.
                     # ponytail: `ocr` will not be, and gets its own branch.

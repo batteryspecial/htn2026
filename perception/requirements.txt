@@ -19,6 +19,10 @@ clip @ git+https://github.com/ultralytics/CLIP.git
 # torch: it leaves the GPU to the detector. Optional — without it the `hands`
 # entry in models.yaml reports unavailable and everything else still boots.
 mediapipe
+# Whole-body keypoints (133: body + feet + face + both hands). ONNX on CPU,
+# same reason as mediapipe. Also optional.
+rtmlib
+onnxruntime
 
 # dev
 pytest

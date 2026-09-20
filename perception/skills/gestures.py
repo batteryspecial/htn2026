@@ -18,18 +18,23 @@ from collections.abc import Callable
 
 import numpy as np
 
-from skills import hands, pose
+from skills import hands, pose, wholebody
+
+_SOURCES: tuple[tuple[str, dict], ...] = (
+    ("pose", pose.GESTURES),
+    ("hands", hands.GESTURES),
+    ("wholebody", wholebody.GESTURES),
+)
 
 #: gesture name -> (role that produces its keypoints, the rule)
 _RULES: dict[str, tuple[str, Callable[[np.ndarray], bool]]] = {
-    **{name: ("pose", fn) for name, fn in pose.GESTURES.items()},
-    **{name: ("hands", fn) for name, fn in hands.GESTURES.items()},
+    name: (role, fn) for role, table in _SOURCES for name, fn in table.items()
 }
 
-# A name defined by both skills would silently resolve to one of them, and the
+# A name defined by two skills would silently resolve to one of them, and the
 # wrong model would be loaded for it. Cheap to assert, miserable to debug.
-assert len(_RULES) == len(pose.GESTURES) + len(hands.GESTURES), (
-    "a gesture name is defined in both skills/pose.py and skills/hands.py")
+assert len(_RULES) == sum(len(t) for _, t in _SOURCES), (
+    "the same gesture name is defined in two skills/ modules")
 
 #: gesture name -> the aux role it needs. `pose_trigger` reads this to decide
 #: what to declare in `needs_roles`, so an unloaded model pauses it with a

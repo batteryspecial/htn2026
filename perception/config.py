@@ -142,6 +142,25 @@ class Config:
     LOCK_EMA_MIN_CONF: float = _f("LOCK_EMA_MIN_CONF", 0.6)
     ARBITRATE_STARVE_S: float = _f("ARBITRATE_STARVE_S", 1.0)
 
+    # 4b. Aux keypoint models
+    #
+    # Every number here is a calibration knob, not a constant: hand and body
+    # detection thresholds are exactly what shifts between a bright demo table
+    # and a dim conference hall, and they are the first thing to reach for when
+    # a gesture reads as flaky on the day.
+    #
+    # Hands are counted per frame, not per person: two people each showing one
+    # hand costs the same as one person showing two.
+    MAX_HANDS: int = _i("MAX_HANDS", 4)
+    # MediaPipe's own defaults are 0.5/0.5. Detection is lowered because a hand
+    # entering the frame is partly cut off; tracking is left high because the
+    # cheap frames are the tracked ones.
+    HAND_DETECTION_CONF: float = _f("HAND_DETECTION_CONF", 0.4)
+    HAND_TRACKING_CONF: float = _f("HAND_TRACKING_CONF", 0.5)
+    # rtmlib: lightweight | balanced | performance. `balanced` holds ~30fps on
+    # CPU; drop to `lightweight` if the whole-body model starves the detector.
+    WHOLEBODY_MODE: str = _env("WHOLEBODY_MODE", "balanced")
+
     # 5. Server
     HOST: str = _env("HOST", "0.0.0.0")
     PORT: int = _i("PORT", 8001)

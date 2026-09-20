@@ -34,10 +34,14 @@ from typing import Any, Literal
 #:           one model per role is active at a time, and sharing the role
 #:           would make "raise your hand" and "raise your index finger"
 #:           mutually exclusive.
+#: wholebody body, feet, face and both hands at once, 133 points. Overlaps
+#:           `pose` and `hands` in what it sees but not in what it fills:
+#:           a gesture needs the role it is registered under.
 #: ocr       reads text in the frame, for the keyboard skill.
-Role = Literal["detector", "embedder", "pose", "hands", "ocr"]
+Role = Literal["detector", "embedder", "pose", "hands", "wholebody", "ocr"]
 
-ROLES: tuple[Role, ...] = ("detector", "embedder", "pose", "hands", "ocr")
+ROLES: tuple[Role, ...] = (
+    "detector", "embedder", "pose", "hands", "wholebody", "ocr")
 
 
 @dataclass(frozen=True)
@@ -98,6 +102,13 @@ def _mediapipe_hands(entry):
     return MediaPipeHands(entry.name)
 
 
+def _rtmpose_wholebody(entry):
+    from skills.wholebody import RTMPoseWholeBody
+
+    # No weights: rtmlib fetches its own ONNX on first load.
+    return RTMPoseWholeBody(entry.name)
+
+
 #: type -> how to build it. Adding a model family is one entry here plus a
 #: class in the folder its role belongs to.
 KINDS: dict[str, Kind] = {
@@ -108,6 +119,7 @@ KINDS: dict[str, Kind] = {
     "hash_encoder": Kind("embedder", _hash_encoder),
     "ultralytics_pose": Kind("pose", _ultralytics_pose, requires="ultralytics"),
     "mediapipe_hands": Kind("hands", _mediapipe_hands, requires="mediapipe"),
+    "rtmpose_wholebody": Kind("wholebody", _rtmpose_wholebody, requires="rtmlib"),
 }
 
 
