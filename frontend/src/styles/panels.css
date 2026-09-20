@@ -67,22 +67,6 @@
 
 .video-objective.none { color: var(--ink-3); border-top-color: var(--ink-3); }
 
-.target-readout {
-  flex: 0 0 auto;
-  margin-top: 10px;
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--ink);
-  background: var(--tile);
-  border: 2px solid var(--ink);
-  padding: 7px 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.target-readout.none { color: var(--ink-3); border-color: var(--grout); }
-
 /* ---------- mic ---------- */
 
 .mic-row {
@@ -448,3 +432,221 @@
   border: 2px solid var(--ink);
   flex: 0 0 auto;
 }
+
+/* ---------- status strip ---------- */
+
+/* Sits with the instruction, not under the video: "did that work?" is asked
+   of the thing you just typed. */
+.statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.statusbar-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.statusbar-pipeline {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusbar-readout {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--tile);
+  border: 2px solid var(--ink);
+  padding: 6px 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.statusbar-readout.none { color: var(--ink-3); border-color: var(--grout); }
+
+/* A behaviour that is ACTIVE with zero matches is not working. Say so. */
+.statusbar-readout.warn {
+  color: var(--oxblood);
+  border-color: var(--ochre);
+  background: #faf0d8;
+}
+
+/* ---------- chat ---------- */
+
+.transcript {
+  flex: 1 1 auto;
+  min-height: 84px;
+  max-height: 26vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-right: 4px;
+}
+
+.transcript.empty { min-height: 0; flex: 0 0 auto; }
+
+.bubble {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 2px solid var(--ink);
+  background: var(--tile);
+  font-size: 15px;
+  max-width: 92%;
+}
+
+.bubble.you { align-self: flex-end; background: var(--ink); color: var(--plate); }
+.bubble.agent { align-self: flex-start; }
+.bubble.alert {
+  align-self: flex-start;
+  border-color: var(--ttc-red);
+  background: #f8e2e0;
+  font-weight: 700;
+}
+
+.bubble-text { flex: 1 1 auto; min-width: 0; }
+
+.bubble-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+
+.bubble.you .bubble-time { color: var(--ochre); }
+
+.bubble-image {
+  width: 100%;
+  max-height: 120px;
+  object-fit: contain;
+  border: 2px solid var(--ink);
+  background: var(--plate);
+}
+
+.composer { flex: 0 0 auto; }
+
+.attachments {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attachments li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 2px solid var(--ink);
+  background: var(--tile);
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.attachments img {
+  width: 44px;
+  height: 34px;
+  object-fit: cover;
+  border: 2px solid var(--ink);
+  flex: 0 0 auto;
+}
+
+/* ---------- timer, inline in a title band ---------- */
+
+.timer-inline {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.timer-inline .timer {
+  font-size: 30px;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.timer-inline .timer small { font-size: 0.4em; }
+.timer-inline .timer-label { font-size: 11px; letter-spacing: 0.14em; }
+
+/* ---------- agent trace ---------- */
+
+.trace {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trace li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 5px 8px;
+  border-left: 5px solid var(--grout);
+  background: var(--tile);
+  font-size: 13px;
+}
+
+.trace li.trace-error { border-left-color: var(--ttc-red); background: #f8e2e0; }
+.trace li.trace-say { border-left-color: var(--rust); background: #fae7dc; }
+.trace li.trace-reply { border-left-color: var(--ink); }
+.trace li.trace-user { border-left-color: var(--ink); background: var(--tile-dim); }
+.trace li.trace-tool_call { border-left-color: var(--ochre); }
+.trace li.trace-tool_result { border-left-color: #2f8f4e; }
+
+.trace-kind {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--ink);
+}
+
+.trace-kind.pass { background: var(--plate); color: var(--ink); }
+.trace-kind.fail { background: var(--ttc-red); color: var(--plate); }
+.trace-kind.warn { background: var(--ochre); color: var(--ink); }
+.trace-kind.pending { background: var(--rust); color: var(--plate); }
+.trace-kind.idle { background: var(--tile-dim); color: var(--ink-3); }
+
+.trace-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trace-label { font-weight: 700; word-break: break-word; }
+
+.trace-detail {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  word-break: break-word;
+}
+
+/* The spec tab keeps its own vertical rhythm. */
+.spec-body { gap: 0; }

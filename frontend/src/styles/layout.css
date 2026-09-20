@@ -45,9 +45,9 @@
 
 /* ---------- columns ---------- */
 
-/* Two independent columns rather than a 2x2 grid: the camera and the output
-   panel want to stretch, the instruction and history panels want their content
-   height, and shared grid rows force those to fight. */
+/* The camera takes the left half: it is what the room is looking at. The
+   right half is the instruction with its status and timer on top, and the
+   logs folded underneath. */
 .grid {
   flex: 1 1 auto;
   min-height: 0;
@@ -64,8 +64,8 @@
   min-width: 0;
 }
 
-.col-left { flex: 1.15 1 0; }
-.col-right { flex: 1 1 0; }
+.col-camera { flex: 1 1 50%; }
+.col-side { flex: 1 1 50%; }
 
 .panel {
   background: var(--plate);
@@ -74,13 +74,23 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Nothing escapes its panel. Without this a squeezed column renders its
+     content straight over the panel below it, which is how the stage strip
+     ended up drawn across the behaviours and events headers. */
+  overflow: hidden;
 }
 
-.panel-video { flex: 1 1 0; min-height: 320px; }
-.panel-input { flex: 0 0 auto; }
-.panel-output { flex: 1 1 0; min-height: 0; }
-.panel-history { flex: 0 0 auto; min-height: 0; max-height: 26vh; }
-.panel-live { flex: 0 0 auto; min-height: 0; max-height: 34vh; }
+/* The camera fills its column; the video itself is the only thing in it. */
+.panel-video { flex: 1 1 auto; min-height: 0; }
+
+/* Instruction sizes to its content, and gives the rest to the logs. */
+.panel-chat { flex: 0 0 auto; }
+
+.panel-scroll {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* black signage band across the head of every panel */
 .panel-title {
@@ -106,16 +116,6 @@
   padding: 1px 8px;
 }
 
-/* two panels side by side inside a column */
-.panel-row {
-  display: flex;
-  gap: 16px;
-  min-height: 0;
-  flex: 0 0 auto;
-}
-
-.panel-row > .panel { flex: 1 1 0; min-width: 0; }
-
 .panel-scroll {
   overflow: auto;
   flex: 1 1 auto;
@@ -126,12 +126,79 @@
 
 @media (max-width: 1100px) {
   .grid { flex-direction: column; overflow: auto; }
-  .col-left, .col-right { flex: 0 0 auto; }
+  .col-camera, .col-side { flex: 0 0 auto; }
   .panel-video { min-height: 46vh; }
-  .panel-output { min-height: 60vh; }
-  .panel-history, .panel-live { max-height: none; }
-  .panel-row { flex-direction: column; }
+  .accordion { overflow: visible; }
+  .fold.open { flex: 0 0 auto; min-height: 30vh; }
   body { overflow: auto; }
   #root { height: auto; min-height: 100%; }
   .brand-text { font-size: 22px; }
+}
+
+/* ---------- accordion ---------- */
+
+.accordion {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.fold {
+  background: var(--plate);
+  border: 3px solid var(--ink);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+/* An open section takes a share of the height; a closed one costs a header. */
+.fold.open { flex: 1 1 0; min-height: 120px; }
+
+.fold-head {
+  margin: 0;
+  padding: 0 14px 0 0;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.fold-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--ttc);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--plate);
+  background: transparent;
+  border: 0;
+  padding: 10px 16px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.fold-toggle:hover { color: var(--ochre); }
+
+.fold-mark {
+  font-size: 12px;
+  color: var(--ochre);
+  width: 12px;
+  flex: 0 0 auto;
+}
+
+.fold-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px 14px;
+  overflow: hidden;
 }

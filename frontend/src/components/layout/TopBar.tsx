@@ -1,9 +1,8 @@
 import type { CompilerMode } from '../../config/settings';
 import type { Reachability } from '../../services/perception';
 
-const MODE_ORDER: CompilerMode[] = ['openai', 'live', 'mock'];
+const MODE_ORDER: CompilerMode[] = ['live', 'mock'];
 const MODE_LABEL: Record<CompilerMode, string> = {
-  openai: 'OPENAI',
   live: 'LIVE',
   mock: 'MOCK',
 };
@@ -37,9 +36,9 @@ export function TopBar(props: TopBarProps) {
       <div className="topbar-right">
         <button
           type="button"
-          className={`pill ${mode === 'live' ? 'live' : ''} ${mode === 'openai' ? 'openai' : ''}`}
+          className={`pill ${mode === 'live' ? 'live' : ''}`}
           onClick={props.onCycleMode}
-          title="Switch between the orchestrator, the in-browser compiler and the offline mock"
+          title="Switch between the orchestrator and the offline mock"
         >
           {MODE_LABEL[mode]}
         </button>

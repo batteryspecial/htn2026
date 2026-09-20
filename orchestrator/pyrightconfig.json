@@ -1,0 +1,10 @@
+{
+  "//": "Modules here are imported by bare name (`from config import CFG`), the same convention perception/ uses. That resolves only when the interpreter's root is this folder, so tell the editor.",
+  "include": ["."],
+  "exclude": ["**/__pycache__", ".venv", ".lancedb"],
+  "extraPaths": ["."],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic"
+}

@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CameraPanel } from './components/camera/CameraPanel';
+import { ChatPanel } from './components/chat/ChatPanel';
+import { Accordion } from './components/common/Accordion';
 import { HistoryPanel } from './components/history/HistoryPanel';
-import { InstructionPanel } from './components/instruction/InstructionPanel';
 import { nextMode, TopBar } from './components/layout/TopBar';
-import { SpecPanel } from './components/output/SpecPanel';
+import { SpecAside, SpecPanel } from './components/output/SpecPanel';
 import { BehaviorsPanel } from './components/pipeline/BehaviorsPanel';
 import { EventsPanel } from './components/pipeline/EventsPanel';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
+import { StatusBar } from './components/status/StatusBar';
+import { TraceAside, TracePanel } from './components/trace/TracePanel';
 import { EVENT_STAGE } from './config/constants';
 import { summarize } from './contracts/program';
 import { useHistory } from './hooks/useHistory';
@@ -19,6 +22,7 @@ import { useRetaskRun } from './hooks/useRetaskRun';
 import { useSettings } from './hooks/useSettings';
 import { useSpeech } from './hooks/useSpeech';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
+import { useTrace } from './hooks/useTrace';
 import { useVideoStream } from './hooks/useVideoStream';
 import type { Reachability } from './services/perception';
 import { ReconnectingSocket } from './services/socket';
@@ -29,6 +33,8 @@ export default function App() {
   const [text, setText] = useState('');
   const [interim, setInterim] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const live = settings.mode === 'live';
 
   /* ------------------------------------------------------------ pipeline */
 
@@ -52,8 +58,18 @@ export default function App() {
     settings, compiler, perception, availableKinds, speak, pushHistory,
   });
 
+  // An alert the agent speaks between turns arrives on the trace socket, not
+  // as a reply — it belongs in the transcript and out of the speakers.
+  const trace = useTrace(orchestrator, settings.apiBase, live, { onSay: run.alert });
+
   const textRef = useRef(text);
   textRef.current = text;
+
+  const send = useCallback((value: string, images: File[] = []) => {
+    setInterim(false);
+    setText('');
+    run.compile(value, images);
+  }, [run]);
 
   const speech = useSpeechRecognition({
     lang: settings.lang,
@@ -62,7 +78,7 @@ export default function App() {
       setText(transcript);
       setInterim(stillChanging);
     },
-    onSilence: settings.autoSend ? (t) => run.compile(t) : undefined,
+    onSilence: settings.autoSend ? (t) => send(t) : undefined,
   });
 
   /* ------------------------------------------------------- stage sources */
@@ -100,7 +116,7 @@ export default function App() {
     });
     socket.connect();
     return () => socket.close();
-  }, [handleStage, orchestrator, settings.mode, settings.apiBase, settings.wsUrl]);
+  }, [handleStage, orchestrator, settings.mode, settings.apiBase]);
 
   /* -------------------------------------------------------- compiler dot */
 
@@ -132,12 +148,6 @@ export default function App() {
 
   /* ------------------------------------------------------------ actions */
 
-  const compile = useCallback((value: string) => {
-    if (speech.listening) speech.stop();
-    setInterim(false);
-    run.compile(value);
-  }, [run, speech]);
-
   const dropBehavior = useCallback((id: string) => {
     perception.removeBehavior(id).catch(() => {});
   }, [perception]);
@@ -146,17 +156,20 @@ export default function App() {
     perception.setModel(name).then(refreshModels).catch(() => {});
   }, [perception, refreshModels]);
 
-  const compilerLabel = settings.mode === 'openai'
-    ? settings.openaiModel
-    : settings.mode === 'live'
-      ? settings.apiBase.replace(/^https?:\/\//, '')
-      : 'mock adapter';
+  const traceProps = {
+    entries: trace.entries,
+    connected: trace.connected,
+    onClear: trace.clear,
+    live,
+  };
+
+  const behaviors = state?.behaviors ?? [];
 
   return (
     <>
       <TopBar
         mode={settings.mode}
-        compilerLabel={compilerLabel}
+        compilerLabel={live ? settings.apiBase.replace(/^https?:\/\//, '') : 'mock adapter'}
         compiler={compilerReach}
         camera={{ live: video.live, note: video.note }}
         tts={settings.tts}
@@ -166,36 +179,84 @@ export default function App() {
       />
 
       <main className="grid">
-        <div className="col col-left">
+        {/* The camera is the thing the room is looking at. It gets the half. */}
+        <div className="col col-camera">
           <CameraPanel
             video={video}
             objective={run.view.program ? summarize(run.view.program) : null}
-            behavior={behavior}
-            track={track}
-            health={healthOf(pipelineHealth)}
           />
-          <InstructionPanel
+        </div>
+
+        <div className="col col-side">
+          <ChatPanel
+            messages={run.view.messages}
             text={text}
             onTextChange={setText}
             interim={interim}
             busy={run.view.busy}
+            timer={run.view.timer}
             speech={speech}
-            onCompile={compile}
+            status={
+              <StatusBar
+                behavior={behavior}
+                track={track}
+                health={healthOf(pipelineHealth)}
+                behaviorCount={behaviors.length}
+              />
+            }
+            onSend={send}
             onStop={run.stop}
           />
-        </div>
 
-        <div className="col col-right">
-          <SpecPanel run={run.view} />
-          <div className="panel-row">
-            <BehaviorsPanel behaviors={state?.behaviors ?? []} onDrop={dropBehavior} />
-            <EventsPanel
-              events={events}
-              snapshotUrl={(id) => perception.eventSnapshotUrl(id)}
-              onClear={clearEvents}
-            />
-          </div>
-          <HistoryPanel entries={entries} onRecall={run.recall} />
+          <Accordion
+            className="col-logs"
+            initial={['events']}
+            sections={[
+              {
+                id: 'trace',
+                label: 'Agent trace',
+                count: trace.entries.length,
+                aside: <TraceAside {...traceProps} />,
+                render: () => <TracePanel {...traceProps} />,
+              },
+              {
+                id: 'events',
+                label: 'Events',
+                count: events.length,
+                aside: (
+                  <button type="button" className="title-btn" onClick={clearEvents}>
+                    CLEAR
+                  </button>
+                ),
+                render: () => (
+                  <EventsPanel
+                    events={events}
+                    snapshotUrl={(id) => perception.eventSnapshotUrl(id)}
+                  />
+                ),
+              },
+              {
+                id: 'behaviors',
+                label: 'Behaviours',
+                count: behaviors.length,
+                render: () => (
+                  <BehaviorsPanel behaviors={behaviors} onDrop={dropBehavior} />
+                ),
+              },
+              {
+                id: 'spec',
+                label: 'Spec',
+                aside: <SpecAside run={run.view} />,
+                render: () => <SpecPanel run={run.view} />,
+              },
+              {
+                id: 'history',
+                label: 'History',
+                count: entries.length,
+                render: () => <HistoryPanel entries={entries} onRecall={run.recall} />,
+              },
+            ]}
+          />
         </div>
       </main>
 

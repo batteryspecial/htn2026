@@ -1,1 +1,5 @@
 /documents
+.env
+__pycache__/
+.lancedb/
+*.pyc

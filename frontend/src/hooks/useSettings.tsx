@@ -5,16 +5,17 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  loadSettings, normalize, saveSettings, type Runtime,
+  loadSettings, REQUEST_TIMEOUT_MS, saveSettings,
+  type Preferences, type Settings,
 } from '../config/settings';
 import { createCompiler, type Compiler } from '../services/compilers';
 import { OrchestratorClient } from '../services/orchestrator';
 import { PerceptionClient } from '../services/perception';
 
 interface SettingsContextValue {
-  settings: Runtime;
-  /** Merge a patch, persist it, and rebuild the clients. */
-  update: (patch: Partial<Runtime>) => void;
+  settings: Settings;
+  /** Merge a preference patch, persist it, and rebuild the clients. */
+  update: (patch: Partial<Preferences>) => void;
   compiler: Compiler;
   perception: PerceptionClient;
   orchestrator: OrchestratorClient;
@@ -23,18 +24,18 @@ interface SettingsContextValue {
 const SettingsContext = createContext<SettingsContextValue | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [settings, setSettings] = useState<Runtime>(loadSettings);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
 
   // The clients hold a base URL rather than a settings snapshot, so they are
   // reconfigured in place. Rebuilding them would drop every open socket.
   const perception = useRef(new PerceptionClient(settings.pipelineBase)).current;
   const orchestrator = useRef(
-    new OrchestratorClient(settings.apiBase, settings.wsUrl, settings.requestTimeoutMs),
+    new OrchestratorClient(settings.apiBase, REQUEST_TIMEOUT_MS),
   ).current;
 
-  const update = useCallback((patch: Partial<Runtime>) => {
+  const update = useCallback((patch: Partial<Preferences>) => {
     setSettings((prev) => {
-      const next = normalize({ ...prev, ...patch });
+      const next = { ...prev, ...patch };
       saveSettings(next);
       return next;
     });
@@ -47,8 +48,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [perception, settings.pipelineBase]);
 
   useMemo(() => {
-    orchestrator.configure(settings.apiBase, settings.wsUrl, settings.requestTimeoutMs);
-  }, [orchestrator, settings.apiBase, settings.wsUrl, settings.requestTimeoutMs]);
+    orchestrator.configure(settings.apiBase, REQUEST_TIMEOUT_MS);
+  }, [orchestrator, settings.apiBase]);
 
   // A compiler is a thin wrapper over a settings snapshot, so rebuilding it on
   // change is correct and cheap.

@@ -2,10 +2,8 @@ import { useCallback, useState } from 'react';
 import { reorder, type Program } from '../../contracts/program';
 import type { RunView } from '../../hooks/useRetaskRun';
 import { Badge } from '../common/Badge';
-import { Panel } from '../common/Panel';
 import { JsonView } from './JsonView';
 import { Notices } from './Notices';
-import { RetaskTimer } from './RetaskTimer';
 import { StageStrip } from './StageStrip';
 
 const placeholderFor = (run: RunView): string => {
@@ -39,20 +37,8 @@ export function SpecPanel({ run }: { run: RunView }) {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }, [program]);
 
-  const count = program?.behaviors.length ?? 0;
-
   return (
-    <Panel
-      className="panel-output"
-      title="Behaviours"
-      aside={
-        <>
-          {count > 0 && <span className="count">{count}</span>}
-          <Badge kind={run.badge.kind}>{run.badge.text}</Badge>
-        </>
-      }
-    >
-      <RetaskTimer timer={run.timer} />
+    <div className="panel-scroll spec-body">
       <StageStrip reached={run.reached} />
       <JsonView
         value={program ? reorder(program) : null}
@@ -68,6 +54,17 @@ export function SpecPanel({ run }: { run: RunView }) {
           Download
         </button>
       </div>
-    </Panel>
+    </div>
+  );
+}
+
+/** The badge belongs in the tab strip, not above the JSON. */
+export function SpecAside({ run }: { run: RunView }) {
+  const count = run.program?.behaviors.length ?? 0;
+  return (
+    <>
+      {count > 0 && <span className="count">{count}</span>}
+      <Badge kind={run.badge.kind}>{run.badge.text}</Badge>
+    </>
   );
 }

@@ -1,0 +1,22 @@
+# Orchestrator (:8000) — the agent layer.
+# Verified to resolve on Python 3.14 with no source builds.
+
+fastapi
+uvicorn[standard]
+python-multipart          # multipart uploads on POST /chat
+httpx                     # tool calls to perception
+websockets                # the /ws/events consumer
+
+pydantic>=2
+python-dotenv
+
+langgraph                 # the agent loop
+langchain-core
+langchain-openai          # swap for another provider in agent/llm.py
+
+lancedb                   # phrase memory
+pyarrow                   # lancedb's table format
+tantivy                   # full-text index, the offline fallback for retrieval
+
+pytest
+pytest-asyncio

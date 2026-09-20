@@ -1,7 +1,6 @@
 import { stateClass } from '../../config/constants';
 import type { BehaviorView } from '../../contracts/behavior';
 import { Badge } from '../common/Badge';
-import { Panel } from '../common/Panel';
 
 /**
  * What the pipeline is actually running, straight off the per-frame StateView.
@@ -15,34 +14,28 @@ export function BehaviorsPanel({ behaviors, onDrop }: {
   onDrop: (id: string) => void;
 }) {
   return (
-    <Panel
-      className="panel-live"
-      title="Behaviours"
-      aside={<span className="count">{behaviors.length}</span>}
-    >
-      <div className="panel-scroll">
-        <ul className="rows">
-          {!behaviors.length && <li className="empty-row">Nothing running.</li>}
-          {behaviors.map((b) => (
-            <li key={b.id}>
-              <Badge kind={stateClass(b.state)} title={b.detail ?? undefined}>{b.state}</Badge>
-              <span className="row-kind">{b.kind}</span>
-              <span className="row-main" title={b.detail ?? b.spec}>
-                {b.label || b.spec}
-                {b.matches > 0 && <span className="row-sub">{`  ·  ${b.matches} match`}</span>}
-              </span>
-              <button
-                type="button"
-                className="row-drop"
-                onClick={() => onDrop(b.id)}
-                title={`DELETE /behaviors/${b.id}`}
-              >
-                DROP
-              </button>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </Panel>
+    <div className="panel-scroll">
+      <ul className="rows">
+        {!behaviors.length && <li className="empty-row">Nothing running.</li>}
+        {behaviors.map((b) => (
+          <li key={b.id}>
+            <Badge kind={stateClass(b.state)} title={b.detail ?? undefined}>{b.state}</Badge>
+            <span className="row-kind">{b.kind}</span>
+            <span className="row-main" title={b.detail ?? b.spec}>
+              {b.label || b.spec}
+              {b.matches > 0 && <span className="row-sub">{`  ·  ${b.matches} match`}</span>}
+            </span>
+            <button
+              type="button"
+              className="row-drop"
+              onClick={() => onDrop(b.id)}
+              title={`DELETE /behaviors/${b.id}`}
+            >
+              DROP
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

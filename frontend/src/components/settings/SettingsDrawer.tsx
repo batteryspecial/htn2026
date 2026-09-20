@@ -1,23 +1,31 @@
+/**
+ * Preferences, not configuration.
+ *
+ * Service URLs come from `.env.local` at build time and are shown here
+ * read-only. A URL typed into a form at demo time is a demo that breaks in a
+ * way nobody in the room can see, and there is no longer any secret to paste:
+ * the LLM and its key belong to the orchestrator.
+ */
+
 import { useEffect, useState } from 'react';
-import { statusUrl, type CompilerMode, type Runtime } from '../../config/settings';
+import type { CompilerMode, Preferences, Settings } from '../../config/settings';
 import type { ModelEntry } from '../../contracts/behavior';
 import { CheckField, SelectField, TextField } from './Field';
 
 export interface SettingsDrawerProps {
   open: boolean;
-  settings: Runtime;
+  settings: Settings;
   models: ModelEntry[];
-  onSave: (patch: Partial<Runtime>) => void;
+  onSave: (patch: Partial<Preferences>) => void;
   /** POST /model — the detector is pipeline state, not a field on a spec. */
   onSelectModel: (name: string) => void;
   onClose: () => void;
 }
 
-/** The drawer edits a draft and commits on Save, so a half-typed URL never applies. */
 export function SettingsDrawer(
   { open, settings, models, onSave, onSelectModel, onClose }: SettingsDrawerProps,
 ) {
-  const [draft, setDraft] = useState<Runtime>(settings);
+  const [draft, setDraft] = useState<Preferences>(settings);
 
   useEffect(() => {
     if (open) setDraft(settings);
@@ -25,7 +33,7 @@ export function SettingsDrawer(
 
   if (!open) return null;
 
-  const set = <K extends keyof Runtime>(key: K, value: Runtime[K]) =>
+  const set = <K extends keyof Preferences>(key: K, value: Preferences[K]) =>
     setDraft((d) => ({ ...d, [key]: value }));
 
   const modelOptions = models.length
@@ -38,21 +46,13 @@ export function SettingsDrawer(
       ].filter(Boolean).join(' · '),
       disabled: m.available === false,
     }))
-    : [{ value: draft.specModel, label: `${draft.specModel} (registry unreachable)` }];
+    : [{ value: draft.detector, label: `${draft.detector} (registry unreachable)` }];
 
   const save = () => {
-    const chosen = models.find((m) => m.name === draft.specModel);
-    onSave({
-      ...draft,
-      openaiModel: draft.openaiModel.trim() || 'gpt-4o-mini',
-      lang: draft.lang.trim() || 'en-US',
-      // The compile prompt words `detect` differently for an open-vocabulary
-      // detector than a fixed one, so it has to know which is selected.
-      specModelOpenVocab: chosen ? chosen.open_vocab !== false : true,
-    });
+    onSave({ ...draft, lang: draft.lang.trim() || 'en-US' });
     // A BehaviorSpec carries no model, so switching detector is its own call.
     // Behaviours the new model cannot serve are paused with a reason, not lost.
-    if (draft.specModel !== settings.specModel) onSelectModel(draft.specModel);
+    if (draft.detector !== settings.detector) onSelectModel(draft.detector);
     onClose();
   };
 
@@ -67,87 +67,23 @@ export function SettingsDrawer(
           value={draft.mode}
           onChange={(v) => set('mode', v)}
           options={[
-            { value: 'openai', label: 'OpenAI — compile in the browser' },
             { value: 'live', label: 'Orchestrator — the agent layer' },
             { value: 'mock', label: 'Mock — offline keyword rules' },
           ]}
-        />
-
-        <TextField
-          label="OpenAI model"
-          value={draft.openaiModel}
-          onChange={(v) => set('openaiModel', v)}
-          placeholder="gpt-4o-mini"
-          hint={
-            <>
-              Key status:{' '}
-              <code>
-                {settings.openaiKey
-                  ? `loaded, ${settings.openaiKey.length} chars, ends ${settings.openaiKey.slice(-4)}`
-                  : 'missing — set VITE_OPENAI_API_KEY in frontend/.env.local'}
-              </code>
-            </>
-          }
-        />
-
-        <TextField
-          label="Pipeline base URL"
-          value={draft.pipelineBase}
-          onChange={(v) => set('pipelineBase', v)}
-          placeholder="http://localhost:8001"
-          hint={
-            <>
-              Perception. Supplies <code>/video</code>, <code>/behaviors</code>,{' '}
-              <code>/models</code>, <code>/health</code>, <code>/ws/state</code> and{' '}
-              <code>/ws/events</code>.
-            </>
-          }
+          hint="Mock needs no network at all. It is the fallback if the venue WiFi
+                or the orchestrator's laptop dies mid-demo."
         />
 
         <SelectField
           label="Detector model"
-          value={draft.specModel}
-          onChange={(v) => set('specModel', v)}
+          value={draft.detector}
+          onChange={(v) => set('detector', v)}
           options={modelOptions}
           hint={
             <>
               From <code>GET /models</code>; applied with <code>POST /model</code> on save.
-              An open-vocabulary detector takes descriptive phrases; a fixed one takes
-              only its own class names, and the compile prompt changes to match.
-            </>
-          }
-        />
-
-        <CheckField
-          label="Post compiled behaviours straight to the pipeline"
-          checked={draft.sendToPipeline}
-          onChange={(v) => set('sendToPipeline', v)}
-        />
-
-        <TextField
-          label="Video stream URL"
-          value={draft.videoUrl}
-          onChange={(v) => set('videoUrl', v)}
-          placeholder="http://localhost:8001/video"
-          hint="The annotated MJPEG. Point it at a phone or webcam stream to test the pane on its own."
-        />
-
-        <TextField
-          label="API base URL"
-          value={draft.apiBase}
-          onChange={(v) => set('apiBase', v)}
-          placeholder="http://localhost:8000"
-          hint="The orchestrator. Swap in a tunnel URL later without touching code."
-        />
-
-        <TextField
-          label="Status WebSocket"
-          value={draft.wsUrl}
-          onChange={(v) => set('wsUrl', v)}
-          placeholder="(derived from API base)"
-          hint={
-            <>
-              Leave blank to use <code>{statusUrl({ apiBase: draft.apiBase, wsUrl: '' })}</code>.
+              Behaviours the new model cannot serve are paused with a reason and resume
+              on their own.
             </>
           }
         />
@@ -166,7 +102,7 @@ export function SettingsDrawer(
         />
 
         <CheckField
-          label="Auto-compile after 1.5 s of silence"
+          label="Send automatically after 1.5 s of silence"
           checked={draft.autoSend}
           onChange={(v) => set('autoSend', v)}
         />
@@ -176,10 +112,14 @@ export function SettingsDrawer(
           <button type="button" className="btn ghost" onClick={onClose}>Close</button>
         </div>
 
-        <p className="hint drawer-hint">
-          Settings live in this browser&apos;s localStorage. Share a preconfigured link with{' '}
-          <code>?api=http://host:8000</code> or force the mock with <code>?mock=1</code>.
-        </p>
+        <div className="field">
+          <span>Services</span>
+          <ul className="endpoints">
+            <li><code>{settings.apiBase}</code><em>orchestrator</em></li>
+            <li><code>{settings.pipelineBase}</code><em>perception</em></li>
+            <li><code>{settings.videoUrl}</code><em>video</em></li>
+          </ul>
+        </div>
       </aside>
     </>
   );
