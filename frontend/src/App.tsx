@@ -8,12 +8,12 @@ import { BehaviorsPanel } from './components/pipeline/BehaviorsPanel';
 import { EventsPanel } from './components/pipeline/EventsPanel';
 import { SettingsDrawer } from './components/settings/SettingsDrawer';
 import { EVENT_STAGE } from './config/constants';
-import { summarize } from './contracts/format';
+import { summarize } from './contracts/program';
 import { useHistory } from './hooks/useHistory';
 import { useHotkeys } from './hooks/useHotkeys';
 import {
-  healthOf, leadBehavior, leadTrack, useModels, usePerceptionEvents,
-  usePerceptionHealth, usePerceptionState,
+  healthOf, leadBehavior, leadTrack, useBehaviorKinds, useModels,
+  usePerceptionEvents, usePerceptionHealth, usePerceptionState,
 } from './hooks/usePerception';
 import { useRetaskRun } from './hooks/useRetaskRun';
 import { useSettings } from './hooks/useSettings';
@@ -36,7 +36,8 @@ export default function App() {
   const state = usePerceptionState(perception, pipelineBase);
   const pipelineHealth = usePerceptionHealth(perception, pipelineBase);
   const { events, clear: clearEvents } = usePerceptionEvents(perception, pipelineBase);
-  const { models, names, refresh: refreshModels } = useModels(perception, pipelineBase);
+  const { models, refresh: refreshModels } = useModels(perception, pipelineBase);
+  const availableKinds = useBehaviorKinds(perception, pipelineBase);
 
   const behavior = leadBehavior(state);
   const track = leadTrack(state, behavior);
@@ -48,7 +49,7 @@ export default function App() {
   const { entries, push: pushHistory } = useHistory();
 
   const run = useRetaskRun({
-    settings, compiler, perception, models: names, speak, pushHistory,
+    settings, compiler, perception, availableKinds, speak, pushHistory,
   });
 
   const textRef = useRef(text);
@@ -68,32 +69,28 @@ export default function App() {
 
   const handleStage = run.handleStage;
 
-  // Pipeline events drive the stage strip. On the native path we translate the
-  // three that have a stage equivalent ourselves; on the legacy path the shim
-  // has already done it and publishes them on /ws/status.
+  // Pipeline events drive the stage strip. Only the three with a stage
+  // equivalent are translated; the rest belong in the events panel, where
+  // they are shown in full rather than flattened into a name that does not fit.
   useEffect(() => {
-    const legacy = settings.dispatch === 'legacy';
-    const url = legacy ? perception.legacyStatusSocketUrl() : perception.eventsSocketUrl();
-
-    const socket = new ReconnectingSocket<Record<string, unknown>>(url, {
-      onMessage: (msg) => {
-        if (legacy) {
-          handleStage(msg as unknown as StageEvent);
-          return;
-        }
-        const stage = EVENT_STAGE[String(msg.type)];
-        if (!stage) return;
-        handleStage({
-          instruction_id: '',
-          stage,
-          ts: Number(msg.ts) || Date.now() / 1000,
-          detail: typeof msg.detail === 'string' ? msg.detail : undefined,
-        });
+    const socket = new ReconnectingSocket<Record<string, unknown>>(
+      perception.eventsSocketUrl(),
+      {
+        onMessage: (msg) => {
+          const stage = EVENT_STAGE[String(msg.type)];
+          if (!stage) return;
+          handleStage({
+            instruction_id: '',
+            stage,
+            ts: Number(msg.ts) || Date.now() / 1000,
+            detail: typeof msg.detail === 'string' ? msg.detail : undefined,
+          });
+        },
       },
-    });
+    );
     socket.connect();
     return () => socket.close();
-  }, [handleStage, perception, pipelineBase, settings.dispatch]);
+  }, [handleStage, perception, pipelineBase]);
 
   // The orchestrator's own status stream, only when it is in the loop.
   useEffect(() => {
@@ -145,6 +142,10 @@ export default function App() {
     perception.removeBehavior(id).catch(() => {});
   }, [perception]);
 
+  const selectModel = useCallback((name: string) => {
+    perception.setModel(name).then(refreshModels).catch(() => {});
+  }, [perception, refreshModels]);
+
   const compilerLabel = settings.mode === 'openai'
     ? settings.openaiModel
     : settings.mode === 'live'
@@ -168,7 +169,7 @@ export default function App() {
         <div className="col col-left">
           <CameraPanel
             video={video}
-            objective={run.view.spec ? summarize(run.view.spec) : null}
+            objective={run.view.program ? summarize(run.view.program) : null}
             behavior={behavior}
             track={track}
             health={healthOf(pipelineHealth)}
@@ -203,6 +204,7 @@ export default function App() {
         settings={settings}
         models={models}
         onSave={update}
+        onSelectModel={selectModel}
         onClose={() => setDrawerOpen(false)}
       />
     </>

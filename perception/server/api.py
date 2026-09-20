@@ -141,57 +141,6 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         svc.builder.clear()
         return {"cleared": True}
 
-    # 1b. Legacy TaskSpec intake ------------------------------------------
-    @app.post("/spec", status_code=202)
-    async def post_spec(body: dict):
-        """Accept a TaskSpec from the frontend's compiler.
-
-        The old contract meant "this is the whole objective now", so applying
-        one replaces every running behaviour. Translated at the edge; nothing
-        downstream knows this shape exists.
-        """
-        from server.legacy import to_behaviors
-
-        spec = body.get("spec") or body
-        instruction_id = body.get("instruction_id")
-        try:
-            behaviors, notes = to_behaviors(spec)
-        except Exception as exc:
-            return _reject(f"could not read that TaskSpec: {exc}")
-
-        for b in behaviors:
-            bad = _vocab_error(svc, b)
-            if bad:
-                return _reject(bad)
-
-        svc.builder.clear()
-        ids = [svc.builder.add_behavior(b) for b in behaviors]
-        log.info("legacy TaskSpec %s -> behaviours %s", spec.get("spec_id"), ids)
-        return {"accepted": True, "instruction_id": instruction_id,
-                "spec_id": spec.get("spec_id"), "behavior_ids": ids, "notes": notes}
-
-    @app.websocket("/ws/status")
-    async def ws_status(ws: WebSocket):
-        """Legacy stage stream: the same events, in the old vocabulary.
-
-        Only events with an old equivalent are forwarded. Inventing stage names
-        for the rest would put unknown entries on the frontend's strip; they
-        stay available in full on /ws/events.
-        """
-        from server.legacy import to_stage
-
-        await ws.accept()
-        stream = svc.events.stream(replay=True)
-        try:
-            async for item in stream:
-                staged = to_stage(item) if hasattr(item, "type") else None
-                if staged:
-                    await ws.send_json(staged)
-        except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
-            pass
-        finally:
-            await stream.aclose()
-
     # 2. Model -----------------------------------------------------------
     @app.post("/model", status_code=202)
     async def set_model(choice: ModelChoice):

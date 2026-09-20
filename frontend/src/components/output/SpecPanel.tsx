@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react';
-import { reorder } from '../../contracts/format';
-import type { TaskSpec } from '../../contracts/taskspec';
+import { reorder, type Program } from '../../contracts/program';
 import type { RunView } from '../../hooks/useRetaskRun';
 import { Badge } from '../common/Badge';
 import { Panel } from '../common/Panel';
@@ -15,48 +14,60 @@ const placeholderFor = (run: RunView): string => {
   return '// awaiting an instruction';
 };
 
+/** What is posted to POST /behaviors, one object per behaviour. */
+const serialize = (program: Program) => JSON.stringify(reorder(program), null, 2);
+
 export function SpecPanel({ run }: { run: RunView }) {
   const [copied, setCopied] = useState(false);
+  const { program } = run;
 
   const copy = useCallback(() => {
-    if (!run.spec) return;
-    navigator.clipboard.writeText(serialize(run.spec)).then(() => {
+    if (!program) return;
+    navigator.clipboard.writeText(serialize(program)).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
     });
-  }, [run.spec]);
+  }, [program]);
 
   const download = useCallback(() => {
-    if (!run.spec) return;
-    const blob = new Blob([serialize(run.spec)], { type: 'application/json' });
+    if (!program) return;
+    const blob = new Blob([serialize(program)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `${run.spec.spec_id || 'taskspec'}.json`;
+    a.download = 'behaviors.json';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-  }, [run.spec]);
+  }, [program]);
+
+  const count = program?.behaviors.length ?? 0;
 
   return (
     <Panel
       className="panel-output"
-      title="TaskSpec"
-      aside={<Badge kind={run.badge.kind}>{run.badge.text}</Badge>}
+      title="Behaviours"
+      aside={
+        <>
+          {count > 0 && <span className="count">{count}</span>}
+          <Badge kind={run.badge.kind}>{run.badge.text}</Badge>
+        </>
+      }
     >
       <RetaskTimer timer={run.timer} />
       <StageStrip reached={run.reached} />
-      <JsonView value={run.spec} placeholder={placeholderFor(run)} />
+      <JsonView
+        value={program ? reorder(program) : null}
+        placeholder={placeholderFor(run)}
+      />
       <Notices notices={run.notices} />
 
       <div className="actions">
-        <button type="button" className="btn ghost" disabled={!run.spec} onClick={copy}>
+        <button type="button" className="btn ghost" disabled={!program} onClick={copy}>
           {copied ? 'Copied' : 'Copy JSON'}
         </button>
-        <button type="button" className="btn ghost" disabled={!run.spec} onClick={download}>
+        <button type="button" className="btn ghost" disabled={!program} onClick={download}>
           Download
         </button>
       </div>
     </Panel>
   );
 }
-
-const serialize = (spec: TaskSpec) => JSON.stringify(reorder(spec), null, 2);

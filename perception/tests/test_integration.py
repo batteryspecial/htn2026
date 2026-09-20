@@ -1,18 +1,16 @@
 """The seams other people's code touches.
 
-Two callers exist that this service does not control: the operator UI, built
-against the older TaskSpec contract, and the agent, being finished now. These
-tests pin the edges both of them land on, so a change here fails in CI rather
-than on stage.
+Two callers exist that this service does not control: the operator console and
+the agent. Both now speak `BehaviorSpec` natively — the TaskSpec shim that used
+to sit in front of `/behaviors` is gone, along with `POST /spec` and
+`WS /ws/status`. These tests pin the edges both callers land on, so a change
+here fails in CI rather than on stage.
 """
-
-import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from server.api import Service, create_app
-from server.legacy import to_behaviors, to_stage
 from tests.rig import Rig, boxes
 
 THING = ("thing", 320, 240, 100)
@@ -35,15 +33,10 @@ def client(rig):
         yield c
 
 
-def taskspec(**over):
-    spec = {
-        "spec_id": "s1",
-        "mode": "follow",
-        "model": "yoloe",
-        "targets": [{"ref": "the thing", "detect": ["thing"], "select": "largest"}],
-    }
-    spec.update(over)
-    return spec
+def track(detect=("thing",), label="the thing", pick="largest"):
+    return {"kind": "track",
+            "subject": {"detect": list(detect), "pick": pick},
+            "render": {"label": label}}
 
 
 # 1. The browser can reach us at all -------------------------------------
@@ -64,122 +57,104 @@ def test_a_preflight_is_answered(client):
     assert r.headers.get("access-control-allow-origin") == "*"
 
 
-# 2. Legacy TaskSpec translation -----------------------------------------
-def test_a_taskspec_becomes_a_tracking_behavior():
-    behaviors, notes = to_behaviors(taskspec())
-    assert len(behaviors) == 1
-    assert behaviors[0].kind == "track"
-    assert behaviors[0].subject.detect == ["thing"]
-    assert behaviors[0].render.label == "the thing"
+# 2. The retired shim -----------------------------------------------------
+@pytest.mark.parametrize("method,path", [
+    ("post", "/spec"),
+    ("delete", "/spec"),
+])
+def test_the_taskspec_routes_are_gone(client, method, path):
+    """`server/legacy.py` mapped every target to one `track`, which put six of
+    the eight behaviour kinds out of reach of the only UI. Both callers compile
+    to `BehaviorSpec` now, so the shim is deleted rather than deprecated — a
+    second intake shape is a second thing to keep in step."""
+    assert client.request(method.upper(), path).status_code in (404, 405)
 
 
-def test_two_targets_become_two_behaviors():
-    behaviors, _ = to_behaviors(taskspec(targets=[
-        {"ref": "pencil", "detect": ["pencil"]},
-        {"ref": "eraser", "detect": ["eraser"]},
-    ]))
-    assert [b.subject.detect for b in behaviors] == [["pencil"], ["eraser"]]
+def test_the_legacy_stage_socket_is_gone(client):
+    from starlette.websockets import WebSocketDisconnect
+
+    with pytest.raises((WebSocketDisconnect, RuntimeError)):
+        with client.websocket_connect("/ws/status"):
+            pass
 
 
-def test_verify_becomes_an_include_and_says_so():
-    behaviors, notes = to_behaviors(taskspec(targets=[{
-        "ref": "red shoes", "detect": ["person"],
-        "verify": {"class": "person", "text": "a person in red shoes", "min_score": 0.3},
-    }]))
-    assert behaviors[0].subject.include == ["a person in red shoes"]
-    assert behaviors[0].subject.min_score == 0.3
-    assert any("exclude" in n for n in notes), "the weaker regime should be flagged"
-
-
-def test_relate_survives_the_rename():
-    behaviors, _ = to_behaviors(taskspec(targets=[{
-        "ref": "person with shoe", "detect": ["person", "shoe"],
-        "relate": {"keep": "person", "if_contains": "shoe"},
-    }]))
-    assert behaviors[0].subject.relate.contains == "shoe"
-
-
-def test_locked_becomes_a_reference_pick():
-    behaviors, _ = to_behaviors(taskspec(targets=[
-        {"ref": "him", "detect": ["person"], "select": "locked"}]))
-    assert behaviors[0].subject.pick == "ref"
-
-
-def test_an_unmappable_select_degrades_loudly():
-    """`highest_conf` has no equivalent. Silently picking something else is
-    how a demo does the wrong thing and nobody knows why."""
-    behaviors, notes = to_behaviors(taskspec(targets=[
-        {"ref": "x", "detect": ["thing"], "select": "highest_conf"}]))
-    assert behaviors[0].subject.pick == "largest"
-    assert any("highest_conf" in n for n in notes)
-
-
-@pytest.mark.parametrize("bad", [{}, {"targets": []}, {"targets": [{"ref": "x"}]}])
-def test_a_broken_taskspec_raises_rather_than_half_translating(bad):
-    with pytest.raises(ValueError):
-        to_behaviors(bad)
-
-
-# 3. The legacy endpoint end to end ---------------------------------------
-def test_posting_a_taskspec_starts_tracking(client):
-    r = client.post("/spec", json={"instruction_id": "i1", "spec": taskspec()})
-    assert r.status_code == 202
-    assert r.json()["behavior_ids"]
+# 3. Applying an objective ------------------------------------------------
+def test_posting_a_behavior_starts_tracking(client):
+    r = client.post("/behaviors", json=track())
+    assert r.status_code == 201
+    assert r.json()["id"]
     client.rig.settle()
     client.rig.frames(5, seen=boxes(THING))
     assert client.get("/health").json()["behaviors"] == 1
 
 
-def test_a_bare_taskspec_without_the_envelope_also_works(client):
-    """The compiler emits the spec itself; the orchestrator wraps it. Accept
-    both rather than making the caller guess."""
-    assert client.post("/spec", json=taskspec()).status_code == 202
-
-
-def test_a_new_taskspec_replaces_the_old_objective(client):
-    """The old contract meant "this is the whole objective now"."""
-    client.post("/spec", json=taskspec(targets=[{"ref": "a", "detect": ["thing"]}]))
+def test_clearing_then_posting_replaces_the_objective(client):
+    """An instruction means "this is the whole objective now". The console
+    clears before it posts, so the second instruction does not stack on the
+    first. This is the sequence `PerceptionClient.applyProgram` performs."""
+    client.post("/behaviors", json=track(label="a"))
     client.rig.settle()
-    client.post("/spec", json=taskspec(spec_id="s2",
-                                       targets=[{"ref": "b", "detect": ["other"]}]))
+
+    client.delete("/behaviors")
+    client.post("/behaviors", json=track(detect=("other",), label="b"))
     client.rig.settle()
     client.rig.frames(3, seen=boxes(THING))
+
     behaviors = client.get("/state").json()["behaviors"]
     assert len(behaviors) == 1 and behaviors[0]["label"] == "b"
 
 
-def test_a_taskspec_the_model_cannot_see_is_refused_with_a_reason(client, monkeypatch):
+def test_one_instruction_can_install_several_behaviors(client):
+    """"Guard the table: laptop, phone, wallet" is three behaviours, each with
+    its own subject and its own alert. The old contract capped it at two
+    targets and collapsed them all to `track`."""
+    for label in ("laptop", "phone", "wallet"):
+        r = client.post("/behaviors", json={
+            "kind": "watch",
+            "subject": {"detect": [label], "pick": "largest"},
+            "params": {"triggers": [{"type": "missing", "after_s": 2.0}]},
+            "render": {"label": label},
+        })
+        assert r.status_code == 201
+
+    client.rig.settle()
+    client.rig.frames(3, seen=boxes(THING))
+    assert len(client.get("/state").json()["behaviors"]) == 3
+
+
+def test_a_class_the_model_cannot_see_is_refused_with_a_reason(client, monkeypatch):
     det = client.rig.registry.get("fake")
     monkeypatch.setattr(type(det), "classes", property(lambda self: ["person"]))
-    client.post("/spec", json=taskspec())
+
+    # The vocabulary is read off the resident detector, so the loop has to have
+    # built its world before the check has anything to consult.
+    client.post("/behaviors", json=track(detect=("person",)))
     client.rig.settle()
-    r = client.post("/spec", json=taskspec(targets=[{"ref": "x", "detect": ["duck"]}]))
+
+    r = client.post("/behaviors", json=track(detect=("duck",)))
     assert r.status_code == 422 and "duck" in r.json()["detail"]
 
 
-def test_a_malformed_taskspec_is_refused_not_crashed(client):
-    r = client.post("/spec", json={"spec": {"targets": []}})
-    assert r.status_code == 422 and "TaskSpec" in r.json()["detail"]
+def test_a_malformed_behavior_is_refused_not_crashed(client):
+    assert client.post("/behaviors", json={"kind": "track"}).status_code == 422
+    assert client.post("/behaviors", json={"subject": {"detect": []}}).status_code == 422
 
 
-# 4. Legacy stage stream ---------------------------------------------------
-def test_acquired_appears_as_the_active_stage(client):
-    client.post("/spec", json={"instruction_id": "i1", "spec": taskspec(
-        targets=[{"ref": "x", "detect": ["thing"], "select": "locked"}])})
-    client.rig.settle()
-    with client.websocket_connect("/ws/status") as ws:
+# 4. Events the console draws on ------------------------------------------
+def test_acquiring_a_target_reaches_the_event_stream(client):
+    """The console's headline number is instruction sent -> `acquired`, so
+    this event arriving is the metric the project is measured on."""
+    with client.websocket_connect("/ws/events") as ws:
+        client.post("/behaviors", json=track(pick="ref"))
+        client.rig.settle()
         client.rig.frames(6, seen=boxes(THING))
-        msg = json.loads(ws.receive_text())
-    assert msg["stage"] == "active" and "ts" in msg
 
-
-def test_events_with_no_old_equivalent_are_dropped():
-    """Inventing a stage name would put unknown entries on the UI's strip."""
-    from contracts import Event
-
-    assert to_stage(Event(id="e", type="count_changed")) is None
-    assert to_stage(Event(id="e", type="crossed")) is None
-    assert to_stage(Event(id="e", type="acquired"))["stage"] == "active"
+        seen = set()
+        for _ in range(12):
+            seen.add(ws.receive_json()["type"])
+            if "acquired" in seen:
+                break
+    assert "acquired" in seen
 
 
 # 5. What the agent needs to discover -------------------------------------
@@ -210,35 +185,20 @@ def test_every_refusal_carries_a_reason_the_agent_can_act_on(client):
 
 
 # 6. "all" — the request the old contract could not express ----------------
-def test_select_all_becomes_a_highlight_not_a_track():
-    """"Track all faces" was structurally inexpressible: every select rule
-    picked exactly one, and every target became a `track`, which follows one
-    thing by definition. It looked like the detector had failed."""
-    behaviors, _ = to_behaviors(taskspec(targets=[
-        {"ref": "all faces", "detect": ["person's face"], "select": "all"}]))
-    assert behaviors[0].kind == "highlight"
-    assert behaviors[0].subject.pick == "all"
+def test_highlight_reports_every_match(client):
+    """"Detect all humans" was structurally inexpressible through the shim:
+    every select rule picked exactly one, and every target became a `track`,
+    which follows one thing by definition. It looked like the detector had
+    failed. A `highlight` with `pick: all` is the whole answer."""
+    r = client.post("/behaviors", json={
+        "kind": "highlight",
+        "subject": {"detect": ["thing"], "pick": "all"},
+        "render": {"label": "all things"},
+    })
+    assert r.status_code == 201
 
-
-def test_every_other_select_still_follows_one_thing():
-    for rule in ("largest", "most_centered", "highest_conf", "locked"):
-        behaviors, _ = to_behaviors(taskspec(targets=[
-            {"ref": "x", "detect": ["person"], "select": rule}]))
-        assert behaviors[0].kind == "track", rule
-
-
-def test_an_unknown_select_degrades_and_says_so():
-    behaviors, notes = to_behaviors(taskspec(targets=[
-        {"ref": "x", "detect": ["person"], "select": "vibes"}]))
-    assert behaviors[0].kind == "track" and behaviors[0].subject.pick == "largest"
-    assert any("vibes" in n for n in notes)
-
-
-def test_all_faces_end_to_end(client):
-    r = client.post("/spec", json={"instruction_id": "i1", "spec": taskspec(
-        targets=[{"ref": "all faces", "detect": ["thing"], "select": "all"}])})
-    assert r.status_code == 202
     client.rig.settle()
     client.rig.frames(4, seen=boxes(("thing", 200, 200, 60), ("thing", 450, 300, 60)))
+
     view = client.get("/state").json()["behaviors"][0]
     assert view["kind"] == "highlight" and view["matches"] == 2

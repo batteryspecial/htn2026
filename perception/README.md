@@ -126,7 +126,6 @@ with a reason and resumes by itself when a capable model returns.
 | `GET /video` · `GET /frame.jpg` · `GET /snapshot` | enriched MJPEG; one enriched frame; one **raw** frame |
 | `GET /snapshots/{event_id}.jpg` | the crop an event fired on |
 | `WS /ws/state` · `WS /ws/events` | per-frame state; things that happened |
-| `POST /spec` · `WS /ws/status` | legacy TaskSpec intake and stage stream, for the older operator UI. See `server/legacy.py`; delete once both sides speak `BehaviorSpec` |
 
 `/snapshot` is deliberately un-annotated: the agent's vision model should see
 the world, not our drawings of it.

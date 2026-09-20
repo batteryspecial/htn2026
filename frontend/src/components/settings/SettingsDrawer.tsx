@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { statusUrl, type CompilerMode, type DispatchMode, type Runtime } from '../../config/settings';
+import { statusUrl, type CompilerMode, type Runtime } from '../../config/settings';
 import type { ModelEntry } from '../../contracts/behavior';
 import { CheckField, SelectField, TextField } from './Field';
 
@@ -8,11 +8,15 @@ export interface SettingsDrawerProps {
   settings: Runtime;
   models: ModelEntry[];
   onSave: (patch: Partial<Runtime>) => void;
+  /** POST /model — the detector is pipeline state, not a field on a spec. */
+  onSelectModel: (name: string) => void;
   onClose: () => void;
 }
 
 /** The drawer edits a draft and commits on Save, so a half-typed URL never applies. */
-export function SettingsDrawer({ open, settings, models, onSave, onClose }: SettingsDrawerProps) {
+export function SettingsDrawer(
+  { open, settings, models, onSave, onSelectModel, onClose }: SettingsDrawerProps,
+) {
   const [draft, setDraft] = useState<Runtime>(settings);
 
   useEffect(() => {
@@ -46,6 +50,9 @@ export function SettingsDrawer({ open, settings, models, onSave, onClose }: Sett
       // detector than a fixed one, so it has to know which is selected.
       specModelOpenVocab: chosen ? chosen.open_vocab !== false : true,
     });
+    // A BehaviorSpec carries no model, so switching detector is its own call.
+    // Behaviours the new model cannot serve are paused with a reason, not lost.
+    if (draft.specModel !== settings.specModel) onSelectModel(draft.specModel);
     onClose();
   };
 
@@ -97,23 +104,6 @@ export function SettingsDrawer({ open, settings, models, onSave, onClose }: Sett
           }
         />
 
-        <SelectField<DispatchMode>
-          label="Dispatch contract"
-          value={draft.dispatch}
-          onChange={(v) => set('dispatch', v)}
-          options={[
-            { value: 'behaviors', label: 'BehaviorSpec — POST /behaviors' },
-            { value: 'legacy', label: 'TaskSpec — POST /spec (legacy shim)' },
-          ]}
-          hint={
-            <>
-              <code>/behaviors</code> is the current contract. <code>/spec</code> goes through{' '}
-              <code>server/legacy.py</code>, which maps every target to a <code>track</code>{' '}
-              behaviour — keep it only until that file is deleted.
-            </>
-          }
-        />
-
         <SelectField
           label="Detector model"
           value={draft.specModel}
@@ -121,14 +111,15 @@ export function SettingsDrawer({ open, settings, models, onSave, onClose }: Sett
           options={modelOptions}
           hint={
             <>
-              From <code>GET /models</code>. The pipeline 422s an unknown one.{' '}
-              <code>fake</code> runs the whole loop with no weights and no GPU.
+              From <code>GET /models</code>; applied with <code>POST /model</code> on save.
+              An open-vocabulary detector takes descriptive phrases; a fixed one takes
+              only its own class names, and the compile prompt changes to match.
             </>
           }
         />
 
         <CheckField
-          label="Post compiled objectives straight to the pipeline"
+          label="Post compiled behaviours straight to the pipeline"
           checked={draft.sendToPipeline}
           onChange={(v) => set('sendToPipeline', v)}
         />

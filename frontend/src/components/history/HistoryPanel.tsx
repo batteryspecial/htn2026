@@ -2,6 +2,14 @@ import type { HistoryEntry } from '../../hooks/useHistory';
 import { seconds } from '../../utils/format';
 import { Panel } from '../common/Panel';
 
+/** The kinds a run installed, or why it has none. */
+function tagFor(entry: HistoryEntry): string {
+  const behaviors = entry.program?.behaviors;
+  if (!behaviors?.length) return 'error';
+  const kinds = [...new Set(behaviors.map((b) => b.kind))];
+  return kinds.length === 1 ? kinds[0] : `${behaviors.length} behaviours`;
+}
+
 export function HistoryPanel({ entries, onRecall }: {
   entries: HistoryEntry[];
   onRecall: (entry: HistoryEntry) => void;
@@ -25,7 +33,7 @@ export function HistoryPanel({ entries, onRecall }: {
           >
             <span className="h-time">{seconds(entry.seconds)}s</span>
             <span className="h-text">{entry.text}</span>
-            <span className="h-tag">{entry.spec ? entry.spec.mode ?? '' : 'error'}</span>
+            <span className="h-tag">{tagFor(entry)}</span>
           </li>
         ))}
       </ul>

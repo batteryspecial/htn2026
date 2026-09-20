@@ -211,7 +211,7 @@ perception/
   skills/     pose.py  (keyboard.py)
   actuator/   base.py virtual.py odometry.py
   render/     layers.py hud.py
-  server/     api.py stream.py legacy.py
+  server/     api.py stream.py
   clips/  (gitignored)   scenarios/  scripts/  tests/
 ```
 
