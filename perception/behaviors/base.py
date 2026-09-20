@@ -204,8 +204,10 @@ class Behavior:
         if self._ever_matched or self.state == "PAUSED" or self.detail:
             return
         if frame.now - self.started >= self.barren_after_s:
-            self.detail = (f"nothing matches {self.subject.summary()!r} — "
-                           f"try a more specific phrase")
+            self.detail = (
+                f"nothing matches {self.subject.summary()!r} — "
+                f"try a more specific phrase"
+            )
             log.warning("behaviour %s: %s", self.id, self.detail)
 
     def on_frame(self, frame: Frame, idx: np.ndarray, outcome: Outcome) -> None:
@@ -256,8 +258,7 @@ class Behavior:
             keep = self._contained(tracks, keep, names, subject)
         return np.array(keep, dtype=int)
 
-    def _contained(self, tracks: sv.Detections, keep: list[int], names,
-                   subject=None) -> list[int]:
+    def _contained(self, tracks: sv.Detections, keep: list[int], names, subject=None) -> list[int]:
         """Keep only subjects containing the related class low inside them.
 
         "the person in red shoes" is a person box with a shoe box near its
@@ -314,8 +315,7 @@ class Behavior:
         return self._misses >= self.lose_misses
 
     # 5. Reporting ------------------------------------------------------
-    def event(self, type_: EventType, frame: Frame | None = None,
-              index: int | None = None, detail: str = "", **data) -> Event:
+    def event(self, type_: EventType, frame: Frame | None = None, index: int | None = None, detail: str = "", **data) -> Event:
         ev = Event(id=uuid.uuid4().hex[:10], type=type_, ts=frame.now if frame else time.time(),
                    behavior_id=self.id, detail=detail or f"{self.label}: {type_}",
                    data=data, notify=self.spec.notify)

@@ -43,6 +43,17 @@ models:
     type: fake
     preload: true
 
+  # Reserved for /describe sweeps, never used by the frame loop. A sweep asks
+  # about forty classes at once, and doing that to whatever the camera is
+  # currently tracking with would re-point it mid-track. `sweep: true` marks
+  # it as the spare; the active detector is never chosen, whichever it is.
+  - name: scene
+    role: detector
+    type: yoloe
+    weights: yoloe-11s-seg.pt
+    sweep: true
+    preload: false
+
   # --- embedders -----------------------------------------------------
   # Attributes, reference matching and re-identification all read this. With
   # no embedder the pipeline still runs; attribute checks simply never match.

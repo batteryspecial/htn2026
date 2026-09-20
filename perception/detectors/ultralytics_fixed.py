@@ -81,11 +81,11 @@ class UltralyticsFixedDetector(Detector):
     def apply(self, prepared: FixedPrepared) -> None:
         self._active_ids = list(prepared.class_ids)
 
-    def infer(self, frame: np.ndarray) -> sv.Detections:
+    def infer(self, frame: np.ndarray, conf: float | None = None) -> sv.Detections:
         result = self._model.predict(
             frame,
             imgsz=CFG.IMGSZ,
-            conf=CFG.CONF_THRESHOLD,
+            conf=CFG.CONF_THRESHOLD if conf is None else conf,
             classes=self._active_ids or None,
             # An engine has its precision compiled in, so never ask again.
             quantize=None if self.is_engine else quantize(),

@@ -73,25 +73,38 @@ Physical AI is limited by how its hardware was programmed, not by the hardware i
 
 ## Demo list (source of truth)
 
-| # | Instruction | Device it becomes |
-|---|---|---|
-| 1 | Detect all humans | People counter |
-| 2 | Upload photo + "track that human" | Follow-cam (guidance arrows) |
-| 3 | Watch the yellow duck, ignore black jackets | Sentinel |
-| 4 | Turn 45° left and count people | Surveyor (arrow guides the pan, odometry measures it) |
-| 5 | Track the pencil → now the eraser | Instant retarget |
-| 6 | Track the pencil and the eraser | Multi-target tracker |
-| 7 | Follow the person in red shoes | Attribute + relation reasoning |
-| 8 | Now follow the dog | New class, no retraining |
-| 9 | Guard the table: laptop, phone, wallet | Incident logger |
-| 10 | Anyone in a red hoodie is authorized | Access control |
-| 11 | Tell me when someone raises their hand | Gesture trigger (stretch) |
-| 12 | Blur everyone's face except mine | Privacy camera |
-| 13 | Count people crossing this line | Traffic counter |
-| 14 | What's on the table right now? | Scene Q&A |
-| 15 | Highlight anything red | Attribute search |
-| 16 | Switch your model to RF-DETR | Model swap |
-| 17 | Hover over a keyboard, "type hack the north" | Typing guide (showpiece) |
+Perception column: 🎬 proven on recorded footage · ✅ built and unit-tested,
+waiting on a clip · ⏳ not built.
+
+| # | Instruction | Device it becomes | Perception | What the agent must do |
+|---|---|---|---|---|
+| 1 | Detect all humans | People counter | 🎬 | one `highlight` |
+| 2 | Upload photo + "track that human" | Follow-cam (guidance arrows) | ✅ | `POST /references`, then `track` with `pick: ref` |
+| 3 | Watch the yellow duck, ignore black jackets | Sentinel | 🎬 | `watch` + a `near` trigger with `exclude` |
+| 4 | Turn 45° left and count people | Surveyor (arrow guides the pan, odometry measures it) | ✅ | `pan_to`, wait for `reached`, then `/query/count` |
+| 5 | Track the pencil → now the eraser | Instant retarget | 🎬 | replace the behaviour |
+| 6 | Track the pencil and the eraser | Multi-target tracker | 🎬 | two behaviours; colours are assigned apart |
+| 7 | Follow the person in red shoes | Attribute + relation reasoning | ✅ | `relate` + attribute pair, phrased per SELECTORS.md |
+| 8 | Now follow the dog | New class, no retraining | 🎬 | replace the behaviour |
+| 9 | Guard the table: laptop, phone, wallet | Incident logger | ✅ | three `watch` behaviours, `missing` triggers |
+| 10 | Anyone in a red hoodie is authorized | Access control | ✅ | `exclude` on the trigger's own selector |
+| 11 | Tell me when someone raises their hand | Gesture trigger (stretch) | ✅ | `pose_trigger`; the pose model downloads on first use |
+| 12 | Blur everyone's face except mine | Privacy camera | ✅ | `POST /references`, then `privacy` with `keep_ref` |
+| 13 | Count people crossing this line | Traffic counter | 🎬 | `count_line` with a normalized line |
+| 14 | What's on the table right now? | Scene Q&A | ✅ | `POST /describe`, then its own vision model |
+| 15 | Highlight anything red | Attribute search | ✅ | `highlight` + attribute pair |
+| 16 | Switch your model to RF-DETR | Model swap | ✅ | `POST /model`; works today with `coco` |
+| 17 | Hover over a keyboard, "type hack the north" | Typing guide (showpiece) | ⏳ | needs OCR + a homography fit |
+
+**Fifteen of the sixteen perception items are built.** Seven are proven on
+recorded clips; the rest are unit-tested and waiting on footage. Only #17
+remains, and it is the one item that is a genuine skill rather than a
+combination of existing primitives.
+
+The model zoo landed, so adding a model is now an entry in
+`perception/models.yaml` rather than a code change. #16 already demonstrates
+model swapping with the COCO detector; RF-DETR would be one more entry if it
+installs cleanly.
 
 ## Backups
 

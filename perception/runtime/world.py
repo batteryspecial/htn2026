@@ -14,12 +14,14 @@ new one starts from its initial state.
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import supervision as sv
 from supervision.tracker.byte_tracker.core import ByteTrack
 
@@ -47,6 +49,49 @@ def new_tracker() -> ByteTrack:
         minimum_matching_threshold=CFG.MIN_MATCHING_THRESHOLD,
         frame_rate=CFG.TRACK_FRAME_RATE,
     )
+
+
+def _boost(dets: sv.Detections) -> sv.Detections:
+    """Map detector confidence into the range ByteTrack expects.
+
+    ByteTrack's gates assume a COCO-style detector where a real object scores
+    0.8+; the hardest of them (`thresh=0.7` inline, for confirming a new
+    track) demands 0.30. Open-vocabulary matching is a similarity on a
+    different scale, where 0.15-0.30 is a correct detection, so every gate
+    lands in the wrong place and correct detections flicker.
+
+    `[CONF_THRESHOLD, 1]` is mapped onto `[TRACKER_CONF_FLOOR, 1]`, which is
+    strictly increasing: relative ordering, and therefore every matching
+    decision, is untouched. Only the absolute scale moves.
+    """
+    conf = dets.confidence
+    if conf is None or len(dets) == 0:
+        return dets
+    lo, floor = CFG.CONF_THRESHOLD, CFG.TRACKER_CONF_FLOOR
+    if floor <= lo or lo >= 1.0:
+        return dets
+    scaled = floor + (np.clip(conf, lo, 1.0) - lo) * (1.0 - floor) / (1.0 - lo)
+    out = copy.copy(dets)
+    out.confidence = scaled.astype(np.float32)
+    return out
+
+
+def _restore(dets: sv.Detections) -> sv.Detections:
+    """Undo `_boost`, so everything downstream sees the detector's real score.
+
+    Behaviours gate on confidence — the appearance EMA only updates above 0.6,
+    queries report it, the agent reads it — and all of that must be the number
+    the detector actually produced.
+    """
+    conf = dets.confidence
+    if conf is None or len(dets) == 0:
+        return dets
+    lo, floor = CFG.CONF_THRESHOLD, CFG.TRACKER_CONF_FLOOR
+    if floor <= lo or lo >= 1.0:
+        return dets
+    true = lo + (conf - floor) * (1.0 - lo) / (1.0 - floor)
+    dets.confidence = np.clip(true, 0.0, 1.0).astype(np.float32)
+    return dets
 
 
 @dataclass
@@ -147,20 +192,29 @@ class Shared:
         self.trails.clear()
 
     def track(self, dets: sv.Detections) -> sv.Detections:
-        out = self.tracker.update_with_detections(self._winnow(dets))
+        # Boosted for the tracker, restored immediately afterwards, so the
+        # rescaling is invisible to everything except ByteTrack's thresholds.
+        out = self.tracker.update_with_detections(_boost(self._winnow(dets)))
         self._trails(out)
-        return out
+        return _restore(out)
 
     def _winnow(self, dets: sv.Detections) -> sv.Detections:
-        """Drop detections too small to be anything.
+        """Drop boxes too degenerate to be anything.
 
-        Open-vocabulary detectors produce boxes on texture. On real footage
-        three of four "people without dark jackets" were a patterned wall, and
-        a junk box passes every exclusion by definition.
+        Deliberately close to nothing. The previous version used a fraction of
+        frame area, which threw away every face past about 3.5 m at 1080p —
+        measured — because the cutoff rose with resolution. A detection that is
+        small is not a detection that is wrong; the confidence threshold is the
+        tool for "probably not real", and this is only for boxes a few pixels
+        across.
         """
-        if len(dets) == 0 or CFG.MIN_BOX_FRAC <= 0:
+        if len(dets) == 0:
             return dets
-        keep = dets.box_area >= CFG.MIN_BOX_FRAC * self.frame_area
+        w = dets.xyxy[:, 2] - dets.xyxy[:, 0]
+        h = dets.xyxy[:, 3] - dets.xyxy[:, 1]
+        keep = np.minimum(w, h) >= CFG.MIN_BOX_PX
+        if CFG.MIN_BOX_FRAC > 0:
+            keep &= dets.box_area >= CFG.MIN_BOX_FRAC * self.frame_area
         return dets[keep] if not keep.all() else dets
 
     def _trails(self, dets: sv.Detections) -> None:

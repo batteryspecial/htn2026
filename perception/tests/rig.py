@@ -26,6 +26,7 @@ MODELS_YAML = (
     "models:\n"
     "  - name: fake\n    type: fake\n    preload: true\n"
     "  - name: other\n    type: fake\n    preload: true\n"
+    "  - name: scene\n    type: fake\n    sweep: true\n"
     "  - name: gpu_only\n    type: ultralytics_fixed\n"
     "    weights: nope.engine\n    requires_cuda: true\n"
 )
@@ -56,18 +57,24 @@ class FakeCapture:
         return (now or time.time()) - self.ts if self.ts else float("inf")
 
 
-def boxes(*specs):
-    """Detections from (class_name, cx, cy, size) tuples."""
+def boxes(*specs, conf=0.9):
+    """Detections from (class_name, cx, cy, size) tuples.
+
+    `conf` defaults high, which is comfortable and unrealistic: open-vocabulary
+    matches routinely sit at 0.15-0.30, and a fixture that never goes there is
+    blind to every threshold in the pipeline. Pass it explicitly when the
+    point of the test is the low-confidence path.
+    """
     if not specs:
         return empty_detections()
-    xyxy, names, conf = [], [], []
+    xyxy, names, confidences = [], [], []
     for name, cx, cy, size in specs:
         xyxy.append([cx - size / 2, cy - size / 2, cx + size / 2, cy + size / 2])
         names.append(name)
-        conf.append(0.9)
+        confidences.append(conf)
     return sv.Detections(
         xyxy=np.array(xyxy, dtype=np.float32),
-        confidence=np.array(conf, dtype=np.float32),
+        confidence=np.array(confidences, dtype=np.float32),
         class_id=np.zeros(len(specs), dtype=int),
         data={"class_name": np.array(names, dtype=object)},
     )
@@ -80,6 +87,11 @@ class Rig:
         self.registry = Registry.from_yaml(p)
         self.registry.preload()
         self.detector = self.registry.get("fake")
+        # The spare answers only to words it knows, like a real detector.
+        # Without this a probe reports every wording as working, which is the
+        # opposite of what a probe is for.
+        spare = self.registry.entry("scene").model
+        spare.known = {"thing", "other", "person", "face"}
         # Start blind. Without this the detector invents boxes during settle()
         # and a track behaviour latches onto something no test asked for.
         self.detector.set_script([empty_detections()])

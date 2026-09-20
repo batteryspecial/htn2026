@@ -63,8 +63,7 @@ class PoseTrigger(Behavior):
         self._draw(frame, keypoints, doing, outcome)
         if self._banner and frame.now - self._fired_at < FLASH_S:
             # Held for a beat: a single-frame flash at 30fps is invisible.
-            outcome.layers.append(Alert(text=self._banner, color=self.color,
-                                        intensity=0.7))
+            outcome.layers.append(Alert(text=self._banner, color=self.color, intensity=0.7))
 
         if not doing:
             self._held = 0
@@ -77,18 +76,21 @@ class PoseTrigger(Behavior):
 
         self._fired_at = frame.now
         self._held = 0
-        ev = self.event(self.gesture, frame, None,
-                        detail=f"{self.label}: {len(doing)} "
-                               f"{'person' if len(doing) == 1 else 'people'} "
-                               f"{self.gesture.replace('_', ' ')}",
-                        count=len(doing))
+        ev = self.event(
+            self.gesture,
+            frame,
+            None,
+            detail=f"{self.label}: {len(doing)} "f"{'person' if len(doing) == 1 else 'people'} "f"{self.gesture.replace('_', ' ')}",
+            count=len(doing)
+        )
         self._capture(frame, keypoints[doing[0]], ev, outcome)
         outcome.events.append(ev)
         self._banner = ev.detail
         outcome.layers.append(Alert(text=ev.detail, color=self.color, intensity=0.7))
 
     def _is_subject(self, frame: Frame, idx: np.ndarray, person: np.ndarray) -> bool:
-        """Only count the gesture if it came from someone the selector wants.
+        """
+        Only count the gesture if it came from someone the selector wants.
 
         The pose model finds every body; the selector may want only some of
         them. Matched by box overlap, because pose and detection are separate
@@ -113,8 +115,7 @@ class PoseTrigger(Behavior):
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = (int(v) for v in box)
         pad = 32
-        crop = frame.image[max(0, y1 - pad):min(h, y2 + pad),
-                           max(0, x1 - pad):min(w, x2 + pad)]
+        crop = frame.image[max(0, y1 - pad):min(h, y2 + pad), max(0, x1 - pad):min(w, x2 + pad)]
         if crop.size:
             outcome.snapshots.append((ev.id, crop.copy()))
             ev.snapshot_url = f"/snapshots/{ev.id}.jpg"
@@ -131,5 +132,5 @@ class PoseTrigger(Behavior):
             outcome.layers.append(Boxes(
                 boxes=np.array(boxes, dtype=np.float32), labels=labels,
                 color=self.color,
-                emphasis=next((n for n, i in enumerate(range(len(boxes)))
-                               if i in doing), None)))
+                emphasis=next((n for n, i in enumerate(range(len(boxes))) if i in doing), None)
+            ))

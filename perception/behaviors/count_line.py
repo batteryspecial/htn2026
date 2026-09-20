@@ -79,8 +79,11 @@ class CountLine(Behavior):
             a=(int(ax), int(ay)), b=(int(bx), int(by)), color=self.color,
             label=f"in {self.data['in']}  out {self.data['out']}"))
         if len(idx) and self.spec.render.boxes:
-            outcome.layers.append(Boxes(boxes=frame.tracks[idx].xyxy,
-                                        labels=[], color=self.color))
+            outcome.layers.append(Boxes(
+                boxes=frame.tracks[idx].xyxy,
+                labels=[],
+                color=self.color
+            ))
 
     def _forget(self, ids) -> None:
         """A live stream never ends, so stale sides must not accumulate."""

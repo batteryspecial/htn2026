@@ -378,3 +378,142 @@ def test_the_complaint_clears_once_something_shows_up(rig):
     assert "nothing matches" in (rig.view(b).detail or "")
     rig.frames(4, seen=boxes(THING))
     assert rig.view(b).detail is None
+
+
+# 9. Low-confidence detections ---------------------------------------------
+# The hole that let a tracker bug through for a day. Every fixture emitted
+# confidence 0.9, comfortably above both the detector cutoff and ByteTrack's
+# hidden `track_activation_threshold + 0.1` gate, so 354 tests all passed
+# while real detections at 0.18-0.30 were found and silently never tracked.
+def test_a_low_confidence_detection_still_becomes_a_track(rig):
+    """Open-vocabulary matches routinely sit at 0.15-0.30. If the tracker
+    refuses to create a track there, the behaviour layer sees nothing while
+    the logs show inference succeeding."""
+    b = rig.add(detect=("thing",))
+    rig.settle()
+    rig.frames(5, seen=boxes(THING, conf=0.20))
+    assert rig.view(b).matches >= 1, "a real detection was found and never tracked"
+
+
+def test_tracking_survives_just_above_the_detector_cutoff(rig):
+    from config import CFG
+
+    b = rig.add(kind="track", detect=("thing",), pick="ref")
+    rig.settle()
+    rig.frames(6, seen=boxes(THING, conf=CFG.CONF_THRESHOLD + 0.01))
+    assert rig.state_of(b) == "TRACKING"
+
+
+def test_the_tracker_gate_sits_below_the_detector_cutoff(rig):
+    """ByteTrack adds 0.1 to its activation threshold before deciding whether
+    to create a track. If that lands above CONF_THRESHOLD, everything between
+    the two is detected and discarded."""
+    from config import CFG
+
+    gate = CFG.TRACK_ACTIVATION_THRESHOLD + 0.1
+    assert gate <= CFG.CONF_THRESHOLD, (
+        f"tracker creates no track below {gate:.2f} but the detector emits "
+        f"down to {CFG.CONF_THRESHOLD:.2f}; the gap is silently discarded")
+
+
+def test_every_tracker_gate_sits_below_what_it_actually_sees(rig):
+    """All three gates, checked against the *boosted* cutoff, because that is
+    the number ByteTrack is handed.
+
+    Each one decides something different — whether a track can be born,
+    confirmed, or continued — and each is fused with score, so each is really
+    a confidence floor. Two of them are ours; the third is written inline in
+    the dependency and is the reason the rescale exists.
+    """
+    from config import CFG
+    from runtime.world import _boost
+
+    seen = float(_boost(boxes(("f", 0, 0, 10),
+                              conf=CFG.CONF_THRESHOLD)).confidence[0])
+    gates = {
+        "birth (det_thresh)": CFG.TRACK_ACTIVATION_THRESHOLD + 0.1,
+        "continuation (minimum_matching_threshold)": 1.0 - CFG.MIN_MATCHING_THRESHOLD,
+        "confirmation (hardcoded thresh=0.7)": 1.0 - 0.7,
+    }
+    for name, floor in gates.items():
+        assert floor < seen, (
+            f"{name} needs {floor:.2f} but a detection at the cutoff reaches "
+            f"the tracker as {seen:.2f}; that band flickers every frame")
+
+
+def test_a_detection_at_the_cutoff_keeps_its_track(rig):
+    """The end-to-end version: born *and* kept, not born and abandoned."""
+    from config import CFG
+
+    b = rig.add(kind="track", detect=("thing",), pick="ref")
+    rig.settle()
+    rig.frames(8, seen=boxes(THING, conf=CFG.CONF_THRESHOLD + 0.005))
+    assert rig.state_of(b) == "TRACKING"
+    assert rig.view(b).matches == 1
+
+
+# 10. The confidence rescale ----------------------------------------------
+# ByteTrack's constants assume a COCO detector where a real object scores
+# 0.8+. Open-vocabulary matching is a similarity on a different scale, where
+# 0.15-0.30 is correct, so every gate landed in the wrong place. The worst of
+# them is `thresh=0.7` written inline for confirming a new track, which cannot
+# be configured — hence rescaling rather than patching a dependency.
+def test_the_rescale_round_trips_exactly():
+    """Behaviours gate on confidence, so the number they see must be the one
+    the detector produced."""
+    from runtime.world import _boost, _restore
+
+    for c in (0.15, 0.2, 0.37, 0.6, 1.0):
+        out = _restore(_boost(boxes(("f", 0, 0, 10), conf=c)))
+        assert out.confidence[0] == pytest.approx(c, abs=1e-5)
+
+
+def test_the_rescale_preserves_ordering():
+    """Strictly increasing, so no matching decision changes — only the scale."""
+    from runtime.world import _boost
+
+    confs = [0.15, 0.18, 0.25, 0.4, 0.9]
+    boosted = [_boost(boxes(("f", 0, 0, 10), conf=c)).confidence[0] for c in confs]
+    assert boosted == sorted(boosted)
+    assert all(b > a for a, b in zip(boosted, boosted[1:]))
+
+
+def test_the_cutoff_lands_above_bytetracks_hardcoded_gate():
+    """ByteTrack confirms a new track with `thresh=0.7`, fused with score,
+    which demands 0.30. A detector emitting down to 0.15 must be mapped above
+    that or nothing it finds can ever be confirmed."""
+    from config import CFG
+    from runtime.world import _boost
+
+    at_cutoff = _boost(boxes(("f", 0, 0, 10), conf=CFG.CONF_THRESHOLD)).confidence[0]
+    assert at_cutoff > 0.30, (
+        f"a detection at the cutoff maps to {at_cutoff:.2f}, below ByteTrack's "
+        f"hardcoded 0.30 confirmation gate; it will flicker every frame")
+
+
+def test_a_cutoff_detection_survives_a_prior_empty_frame(rig):
+    """The exact shape of the live bug. ByteTrack activates a new track
+    immediately only on the very first frame it ever sees; after any empty
+    frame a new track must re-match to confirm, and that is where low
+    confidence used to die."""
+    from config import CFG
+    from detectors.base import empty_detections
+    from runtime.world import Shared
+
+    shared = Shared()
+    shared.track(empty_detections())
+    low = boxes(("f", 320, 240, 100), conf=CFG.CONF_THRESHOLD + 0.005)
+    tracked = [len(shared.track(low)) for _ in range(6)]
+    assert sum(tracked) >= 4, f"flickered: {tracked}"
+
+
+def test_a_weak_match_no_longer_flickers(rig):
+    """Asking for a red bottle and being shown a green one scores about 0.2:
+    high enough to detect, too low to confirm. It used to produce a track per
+    frame that never survived, which reads as a mask flashing."""
+    b = rig.add(kind="track", detect=("thing",), pick="ref")
+    rig.settle()
+    rig.frames(2, seen=boxes())
+    rig.frames(8, seen=boxes(THING, conf=0.20))
+    assert rig.state_of(b) == "TRACKING"
+    assert rig.view(b).matches == 1

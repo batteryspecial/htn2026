@@ -55,6 +55,8 @@ class Entry:
     requires_cuda: bool = False
     #: Kind-specific settings (an OCR language, a pose confidence floor).
     options: dict[str, Any] = field(default_factory=dict)
+    #: Reserve this one for scene sweeps rather than the frame loop.
+    sweep: bool = False
 
     model: Any = None
     available: bool = True
@@ -217,6 +219,31 @@ class Registry:
                 + (f"; configured but unusable: {have}" if have else
                    f"; none configured. Add one to {CFG.MODELS_CONFIG.name}"))
         return self.get(name)
+
+    def sweep_detector(self) -> str | None:
+        """A detector to run a scene sweep on, or None.
+
+        Never the active one. A sweep re-points the detector at forty classes,
+        and doing that to the detector the camera is tracking with would break
+        every running behaviour for the sake of a question. The active model
+        also changes under us — the agent can swap it mid-run — so this is
+        resolved per request rather than fixed at boot.
+
+        Must be open-vocabulary: a sweep asks about arbitrary words, and a
+        fixed vocabulary could only ever answer with its own class list.
+        """
+        active = self._active.get("detector")
+        candidates = [
+            e for e in self._entries.values()
+            if e.role == "detector" and e.available and not e.error
+            and e.name != active and getattr(e.model, "open_vocab", False)
+        ]
+        if not candidates:
+            return None
+        # An entry reserved for sweeping wins; otherwise any spare open-vocab
+        # detector will do.
+        candidates.sort(key=lambda e: not e.sweep)
+        return candidates[0].name
 
     # 3. Loading ---------------------------------------------------------
     def get(self, name: str) -> Any:
