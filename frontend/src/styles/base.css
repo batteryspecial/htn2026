@@ -33,8 +33,8 @@ code {
 }
 
 .hint {
-  margin: 12px 0 0;
-  font-size: 12px;
+  margin: 8px 0 0;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: var(--ink-2);

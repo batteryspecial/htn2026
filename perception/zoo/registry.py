@@ -36,6 +36,11 @@ class UnknownModelError(KeyError):
     """Something named a model the registry has never heard of."""
 
 
+def _disabled() -> set[str]:
+    """Model names and roles switched off by config, lowercased."""
+    return {p.strip().lower() for p in CFG.DISABLE_MODELS.split(",") if p.strip()}
+
+
 class ModelUnavailableError(RuntimeError):
     """The model exists in config but cannot run on this machine."""
 
@@ -84,7 +89,13 @@ class Entry:
     def check_available(self, device: str) -> None:
         """Decide once, at boot, whether this entry can run here."""
         kind = self.kind
-        if kind is None:
+        if self.name in _disabled() or self.role in _disabled():
+            # Checked first so it overrides every other verdict: the whole
+            # point is to reproduce "this was never installed" on a machine
+            # where it is.
+            self.available = False
+            self.unavailable_reason = "disabled by DISABLE_MODELS"
+        elif kind is None:
             self.available = False
             self.unavailable_reason = f"unknown type {self.type!r}"
         elif self.role != kind.role:

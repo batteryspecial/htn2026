@@ -40,6 +40,10 @@ log = logging.getLogger("orchestrator.events")
 #: continuously by nature and carry no decision for the agent.
 NEVER_WAKE = {"count_changed", "crossed", "step", "camera_ok"}
 
+# The camera commonly reports a missing frame while its capture thread starts.
+# Give recovery a chance to arrive before paying for a turn about a transient.
+CAMERA_LOST_GRACE_S = 1.0
+
 
 def describe(event: dict[str, Any]) -> str:
     """The event as a sentence, which is what the agent is woken with."""
@@ -62,10 +66,15 @@ class EventWatcher:
         self._task: asyncio.Task | None = None
         self._last_woken: dict[str, float] = {}
         self._stop = asyncio.Event()
+        self._pending: dict[str, asyncio.Task] = {}
+        self._accept_after = time.time()
+        self._seen: dict[str, None] = {}
+        self._camera_lost_at = 0.0
 
     def start(self) -> None:
         if self._task is None:
             self._stop.clear()
+            self._accept_after = time.time()
             self._task = asyncio.create_task(self._run(), name="event-watcher")
 
     async def stop(self) -> None:
@@ -75,6 +84,15 @@ class EventWatcher:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        await self.cancel_pending()
+
+    async def cancel_pending(self) -> None:
+        self._accept_after = time.time()
+        tasks = list(self._pending.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._pending.clear()
 
     @property
     def url(self) -> str:
@@ -106,22 +124,41 @@ class EventWatcher:
             return
         if not isinstance(event, dict) or not event.get("type"):
             return
+        key = f"{event.get('ts')}:{event.get('id')}"
+        if key in self._seen:
+            return
+        self._seen[key] = None
+        if len(self._seen) > 1000:
+            self._seen.pop(next(iter(self._seen)))
 
         # The operator sees every event, whether or not the agent reacts.
         BUS.emit("event", event.get("type", "?"),
                  event.get("detail", ""), **{"event": event})
 
+        if event["type"] == "camera_ok":
+            # A recovery invalidates both a queued loss alert and one whose
+            # model call has started. Cancellation propagates through the
+            # runner's submitted task, including while it waits for its lock.
+            if event.get("ts", 0) >= self._camera_lost_at:
+                pending = self._pending.pop("system:camera_lost", None)
+                if pending is not None:
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                self._last_woken.pop("system:camera_lost", None)
+            return
+
         if not self._should_wake(event):
             return
 
-        snapshot = None
-        url = event.get("snapshot_url")
-        if url:
-            snapshot = await self.perception.event_snapshot(url)
-
         # Not awaited: a turn takes seconds and the socket must keep draining,
         # or the backlog becomes the thing that breaks.
-        asyncio.create_task(self._wake(event, snapshot))
+        key = event.get("behavior_id") or f"system:{event['type']}"
+        if event["type"] == "camera_lost":
+            self._camera_lost_at = event.get("ts", 0)
+        task = asyncio.create_task(self._wake(event))
+        self._pending[key] = task
+        task.add_done_callback(lambda done: self._pending.pop(key, None)
+                               if self._pending.get(key) is done else None)
 
     def _should_wake(self, event: dict[str, Any]) -> bool:
         kind = event.get("type", "")
@@ -131,6 +168,12 @@ class EventWatcher:
             return False
 
         key = event.get("behavior_id") or f"system:{kind}"
+        # Replayed events are useful for the log, never a reason to call the
+        # model again. Bound waiting turns so a slow model cannot build a backlog.
+        if event.get("ts", 0) < self._accept_after or key in self._pending:
+            return False
+        if len(self._pending) >= 8:
+            return False
         now = time.monotonic()
         last = self._last_woken.get(key, 0.0)
         if now - last < CFG.event_cooldown_s:
@@ -140,8 +183,22 @@ class EventWatcher:
         self._last_woken[key] = now
         return True
 
-    async def _wake(self, event: dict[str, Any], snapshot: bytes | None) -> None:
+    async def _wake(self, event: dict[str, Any]) -> None:
         try:
+            if event["type"] == "camera_lost":
+                await asyncio.sleep(CAMERA_LOST_GRACE_S)
+                # Recovery can also happen while the websocket reconnects.
+                # Consult the current camera state rather than trust an old
+                # event when its matching camera_ok was missed.
+                health = await self.perception.health()
+                if (health.get("ok") and health.get("camera_ok") is True
+                        and health.get("status") == "ok"):
+                    return
+            snapshot = None
+            if event.get("snapshot_url"):
+                snapshot = await self.perception.event_snapshot(event["snapshot_url"])
+            if event.get("ts", 0) < self._accept_after:
+                return
             await self.runner.event_turn(describe(event), snapshot)
         except Exception:                               # noqa: BLE001
             log.exception("event turn failed")

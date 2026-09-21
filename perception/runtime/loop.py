@@ -90,6 +90,11 @@ class InferenceLoop:
         self.world: World | None = None
         self.view = View()
         self.timings = Timings()
+        #: A tracking reset asked for from another thread, honoured at the top
+        #: of the next frame. Track ids do not survive a camera change: a
+        #: `track` behaviour holding track #7 would wait forever for a track
+        #: that belongs to a different lens.
+        self._pending_reset: str | None = None
         self.last_state: StateView | None = None
         #: Raw tracked detections from the last frame. The published state is
         #: normalized; review tools need the pixels.
@@ -98,8 +103,13 @@ class InferenceLoop:
         #: event id -> JPEG. Served by /snapshots/{id}.jpg so the agent can
         #: look at what fired. Bounded: a live stream never ends.
         self.snapshots: OrderedDict[str, bytes] = OrderedDict()
+        # Correlated lifecycle for asynchronous control operations.  Queue
+        # acceptance is not installation; only this thread can confirm that a
+        # prepared world was applied between frames.
+        self.operations: OrderedDict[str, dict] = OrderedDict()
         self._last_seq = -1
         self._last_publish = 0.0
+        self._started_at = time.time()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -115,18 +125,44 @@ class InferenceLoop:
     def _drain(self, now: float) -> None:
         for out in self.builder.poll():
             if isinstance(out, Accepted):
-                continue  # the id was handed back synchronously
+                self._record_operation(out.op, "pending")
+                continue
             if isinstance(out, ModelLoading):
                 log.info("cold-loading %s", out.model)
             elif isinstance(out, ModelLoaded):
                 log.info("cold-loaded %s in %.1fs", out.model, out.seconds)
             elif isinstance(out, Rejected):
                 log.warning("rejected %s: %s", out.op.describe(), out.reason)
+                self._record_operation(out.op, "failed", out.reason)
                 self.health.event("behavior_failed", out.reason,
+                                  behavior_id=out.op.behavior_id,
                                   op=out.op.describe(),
-                                  behavior_id=out.op.behavior_id)
+                                  operation_seq=out.op.seq)
             elif isinstance(out, Applied):
                 self._install(out, now)
+
+    @staticmethod
+    def _operation_key(op) -> str:
+        if op.kind == "add_behavior" and op.behavior_id:
+            return op.behavior_id
+        if op.kind == "add_reference" and op.ref_id:
+            return op.ref_id
+        return f"op-{op.seq}"
+
+    def _record_operation(self, op, status: str,
+                          detail: str | None = None) -> None:
+        key = self._operation_key(op)
+        self.operations[key] = {
+            "id": key, "seq": op.seq, "kind": op.kind,
+            "status": status, "detail": detail,
+        }
+        self.operations.move_to_end(key)
+        while len(self.operations) > 256:
+            self.operations.popitem(last=False)
+
+    def operation_status(self, operation_id: str) -> dict | None:
+        value = self.operations.get(operation_id)
+        return dict(value) if value else None
 
     def _install(self, out: Applied, now: float) -> None:
         world = out.world
@@ -140,7 +176,11 @@ class InferenceLoop:
                 self.timings.mark("apply", time.perf_counter() - t0)
         except Exception as exc:
             log.exception("apply failed; keeping the running world")
-            self.health.event("behavior_failed", f"apply failed: {exc}")
+            detail = f"apply failed: {exc}"
+            self._record_operation(out.op, "failed", detail)
+            self.health.event("behavior_failed", detail,
+                              behavior_id=out.op.behavior_id,
+                              operation_seq=out.op.seq)
             return
 
         if out.reset_tracking:
@@ -148,17 +188,40 @@ class InferenceLoop:
         self.shared.bank.set_texts(world.text_vectors, world.baseline_vectors)
         self.shared.bank.set_references(world.ref_vectors)
         self.world = world
+        final_status = {
+            "add_behavior": "installed",
+            "remove_behavior": "removed",
+            "clear": "cleared",
+            "set_model": "switched",
+            "add_reference": "installed",
+        }.get(out.op.kind, "applied")
+        self._record_operation(out.op, final_status)
         log.info("applied %s -> %s in %.0fms", out.op.describe(), world.summary(),
                  out.seconds * 1000)
         if out.op.kind == "set_model":
             paused = [b.id for b in world.behaviors.values() if b.state == "PAUSED"]
             self.health.model_switched(world.model_name, self.timings.fps, paused)
 
+    def request_reset(self, reason: str) -> None:
+        """Drop every track at the top of the next frame.
+
+        Called by the camera switch. The tracker's ids describe a scene from
+        a different sensor, and keeping them means a follow-cam waits for a
+        track that can never reappear.
+        """
+        self._pending_reset = reason
+
     # 2. One frame -------------------------------------------------------
     def step(self, now: float | None = None) -> StateView | None:
         """Exactly one frame of work. Returns what was published, if anything."""
         now = time.time() if now is None else now
         self._drain(now)
+
+        # A plain read and write of a str slot, so no lock: the worst a race
+        # can do is carry the reset to the next frame.
+        if self._pending_reset:
+            reason, self._pending_reset = self._pending_reset, None
+            self.shared.reset(reason)
 
         frame, _, seq = self.capture.read()
         if frame is None or self.capture.age(now) > CFG.CAMERA_DEAD_S:
@@ -305,7 +368,17 @@ class InferenceLoop:
     def _camera_down(self, now: float) -> StateView | None:
         """Keep talking while broken. Silence and failure look identical from
         outside, and only one of them is diagnosable."""
-        self.health.camera(False, f"no frame for {self.capture.age(now):.1f}s")
+        age = self.capture.age(now)
+        # Capture commonly starts a fraction after the inference thread. Do
+        # not manufacture a replayed camera_lost event (or "infs") during that
+        # normal startup window.
+        if not self.health.camera_ok and now - self._started_at < CFG.CAMERA_DEAD_S:
+            if now - self._last_publish < 1.0 / CFG.FAULT_HEARTBEAT_HZ:
+                return None
+            return self._publish(self._state(now, []), None, [])
+        detail = (f"no frame for {age:.1f}s" if np.isfinite(age)
+                  else "no frame received since startup")
+        self.health.camera(False, detail)
         if now - self._last_publish < 1.0 / CFG.FAULT_HEARTBEAT_HZ:
             return None
         return self._publish(self._state(now, []), None, [])

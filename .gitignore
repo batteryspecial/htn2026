@@ -7,6 +7,7 @@ __pycache__/
 
 # Environments
 .venv/
+.venv-light/
 venv/
 env/
 .env
@@ -20,7 +21,14 @@ weights/
 *.pth
 *.onnx
 *.engine
-*.ts
+# TorchScript model artifacts only; do not ignore frontend TypeScript source.
+# Ultralytics downloads a ~570MB MobileCLIP encoder on first use and puts it
+# wherever the service was started from, which is not always weights/ — so the
+# whole of perception/ is covered. There is no TypeScript source under it.
+perception/**/*.ts
+perception/*.ts
+perception/weights/**/*.ts
+perception/weights/*.ts
 *.safetensors
 *.bin
 

@@ -1,9 +1,10 @@
 """HTTP and WebSocket surface. Port 8001.
 
 Shaped by who is on the other end. The **agent** starts and stops behaviours
-and asks questions; it thinks in seconds and must never be blocked, so every
-change returns immediately and is applied in the background. The **frontend**
-watches the enriched feed and a state channel.
+and asks questions; behaviour changes return immediately and are applied in
+the background. Reference uploads wait for their encoder result so a returned
+id is already usable. The **frontend** watches the enriched feed and a state
+channel.
 
 Nothing here mutates pipeline state. Requests become operations the frame loop
 picks up, which keeps that loop the only writer.
@@ -21,11 +22,12 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
-from fastapi import FastAPI, File, Form, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from behaviors.kinds import BUILT, KINDS
+from behaviors.base import Behavior, Frame
 from config import CFG, resolve_device
 from contracts import (
     BehaviorCreated,
@@ -44,10 +46,12 @@ from contracts import (
     ModelChoice,
 )
 from zoo.registry import Registry
+from runtime.cameras import CameraChoice
 from runtime.capture import Capture
 from runtime.events import Bus
 from runtime.health import Health
 from runtime.loop import InferenceLoop
+from runtime.ops import Rejected
 from runtime.workers import Builder
 from server.debug_page import DEBUG_PAGE
 from skills import gestures as gesture_vocab
@@ -129,18 +133,37 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
             "kinds": {"available": sorted(BUILT), "planned": sorted(set(KINDS) - BUILT)},
         }
 
+    @app.get("/behaviors/{behavior_id}/status")
+    async def behavior_status(behavior_id: str):
+        """Return accepted/pending/installed/failed for one behavior id."""
+        status = svc.loop.operation_status(behavior_id)
+        if status is None:
+            if behavior_id in svc.loop.behaviors:
+                return {"id": behavior_id, "status": "installed", "detail": None}
+            return JSONResponse(status_code=404,
+                                content={"detail": f"unknown behaviour {behavior_id!r}"})
+        return status
+
+    @app.get("/operations/{operation_id}")
+    async def operation_status(operation_id: str):
+        status = svc.loop.operation_status(operation_id)
+        if status is None:
+            return JSONResponse(status_code=404,
+                                content={"detail": f"unknown operation {operation_id!r}"})
+        return status
+
     @app.delete("/behaviors/{behavior_id}", status_code=202)
     async def remove_behavior(behavior_id: str):
         if behavior_id not in svc.loop.behaviors:
             return JSONResponse(status_code=404,
                                 content={"detail": f"no behaviour {behavior_id!r}"})
-        svc.builder.remove_behavior(behavior_id)
-        return {"removed": behavior_id}
+        op = svc.builder.remove_behavior(behavior_id)
+        return {"removed": behavior_id, "operation_id": f"op-{op.seq}"}
 
     @app.delete("/behaviors", status_code=202)
     async def clear_behaviors():
-        svc.builder.clear()
-        return {"cleared": True}
+        op = svc.builder.clear()
+        return {"cleared": True, "operation_id": f"op-{op.seq}"}
 
     @app.post("/behaviors/{behavior_id}/advance", status_code=202)
     async def advance_behavior(behavior_id: str):
@@ -179,8 +202,9 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
             # the tracker depends on which pose model is active.
             svc.registry.set_active(entry.role, choice.name)
             return {"accepted": True, "model": choice.name, "role": entry.role}
-        svc.builder.set_model(choice.name)
-        return {"accepted": True, "model": choice.name, "role": "detector"}
+        op = svc.builder.set_model(choice.name)
+        return {"accepted": True, "model": choice.name, "role": "detector",
+                "operation_id": f"op-{op.seq}"}
 
     @app.get("/models")
     async def models():
@@ -201,6 +225,83 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
         return {"models": svc.registry.manifest(), "roles": svc.registry.roles(),
                 "gestures": gesture_vocab.available(svc.registry.has_role),
                 "device": resolve_device()}
+
+    # 2b. Camera ---------------------------------------------------------
+    #
+    # Same shape as the model swap above: GET the manifest, POST the choice.
+    # Enumeration is server-side because the camera is opened here, by
+    # OpenCV, in a thread. The browser's own device list names cameras this
+    # process cannot open and indexes them differently.
+
+    @app.get("/cameras")
+    async def cameras(refresh: bool = False):
+        """Every camera this machine offers, and which one is live.
+
+        `refresh=1` re-scans and opens each idle device to read its real
+        resolution. That is disruptive — opening a device already in use can
+        steal it — so the active camera is never probed; its numbers come
+        from the live capture instead.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        import runtime.cameras as cameras_mod
+
+        source = svc.capture.source
+        found = await run_in_threadpool(
+            cameras_mod.list_cameras, source, refresh=refresh)
+
+        listed = [c.as_dict() for c in found]
+        for entry in listed:
+            if entry["active"]:
+                # What the driver actually gave us, not what was requested.
+                entry.update(width=svc.capture.width, height=svc.capture.height,
+                             fps=svc.capture.fps, available=svc.capture.opened,
+                             fourcc=svc.capture.fourcc)
+
+        if not any(e["active"] for e in listed):
+            # A file or a stream URL is a perfectly good source and is not in
+            # any device list. Say what is running rather than showing nothing.
+            listed.append({"index": -1, "name": source, "backend": "file",
+                           "active": True, "available": svc.capture.opened,
+                           "width": svc.capture.width, "height": svc.capture.height,
+                           "fps": svc.capture.fps, "detail": "not a camera device"})
+
+        return {"cameras": listed, "source": source,
+                "backend": cameras_mod.backend_name()}
+
+    @app.post("/camera", status_code=202)
+    async def set_camera(choice: CameraChoice):
+        """Point the pipeline at a different camera.
+
+        Behaviours are left alone: this is a change of sensor, not a change of
+        objective. Tracking is reset, because track ids from the old lens can
+        never reappear on the new one.
+        """
+        from starlette.concurrency import run_in_threadpool
+
+        import runtime.cameras as cameras_mod
+
+        source, detail = await run_in_threadpool(
+            cameras_mod.resolve, choice.source, choice.name)
+        if source is None:
+            return _reject(detail)
+        if source == svc.capture.source:
+            return _reject(f"already reading {detail}")
+
+        ok, result = await run_in_threadpool(svc.capture.switch, source)
+        cameras_mod.invalidate()
+        if not ok:
+            return _reject(result)
+
+        svc.loop.request_reset(f"camera -> {detail}")
+        # No event is emitted here on purpose. Frames stop and restart, so the
+        # loop's own camera_lost / camera_ok pair already tells the story, and
+        # "camera_switched" is not in the shared EventType — adding it is a
+        # change to linker/schemas.py, which is owned jointly.
+        log.info("camera switched to %s (%s)", detail, source)
+        return {"accepted": True, "source": source, "name": detail,
+                "width": svc.capture.width, "height": svc.capture.height,
+                "fps": svc.capture.fps}
 
     # 3. Introspection ---------------------------------------------------
     @app.get("/health")
@@ -225,21 +326,25 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
     # 4. Queries ---------------------------------------------------------
     @app.post("/query/count")
-    async def query_count(q: CountQuery) -> CountResult:
+    async def query_count(q: CountQuery):
         """Median over a window, so one bad frame cannot change the answer."""
-        counts = await _sample(svc, q.selector, q.window_s)
-        return CountResult(count=int(statistics.median(counts)) if counts else 0,
-                           samples=len(counts), window_s=q.window_s)
+        try:
+            counts = await _sample(svc, q.selector, q.window_s)
+            return CountResult(count=int(statistics.median(counts)) if counts else 0,
+                               samples=len(counts), window_s=q.window_s)
+        except QueryUnavailable as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.post("/query/look")
-    async def query_look(q: LookQuery) -> LookResult:
+    async def query_look(q: LookQuery):
         """What is in front of the camera right now, with attribute scores."""
-        state = svc.loop.last_state
-        tracks = list(state.tracks) if state else []
-        if q.selector:
-            wanted = set(q.selector.detect)
-            tracks = [t for t in tracks if t.label in wanted]
-        return LookResult(tracks=tracks)
+        try:
+            state = svc.loop.last_state
+            tracks = (await _query_tracks(svc, q.selector)
+                      if q.selector else list(state.tracks if state else []))
+            return LookResult(tracks=tracks)
+        except QueryUnavailable as exc:
+            return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.post("/probe")
     async def probe(req: ProbeRequest) -> ProbeResult:
@@ -258,12 +363,15 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
         frame = svc.loop.view.frame
         if frame is None:
-            return ProbeResult(detail="no frame to look at")
+            return JSONResponse(status_code=503,
+                                content={"detail": "no frame to look at"})
         try:
             raw = await run_in_threadpool(
                 scene_mod.probe, svc.registry, frame, req.phrases, frame.shape)
         except Exception as exc:
-            return ProbeResult(detail=str(exc))
+            log.exception("probe failed")
+            return JSONResponse(status_code=500,
+                                content={"detail": f"probe failed: {exc}"})
         best, advice = scene_mod.probe_advice(raw)
         return ProbeResult(results=[PhraseResult(**r) for r in raw],
                            best=best, advice=advice)
@@ -337,9 +445,8 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
     # 4b. References ------------------------------------------------------
     @app.post("/references", status_code=201)
-    async def add_reference(file: UploadFile | None = File(default=None),
-                            label: str | None = Form(default=None),
-                            body: dict | None = None):
+    async def add_reference(request: Request, file: UploadFile | None = File(default=None),
+                            label: str | None = Form(default=None)):
         """Register an appearance to match against: "track *that* one".
 
         Either an uploaded photo, or `{"from": "largest_person"}` to take the
@@ -355,13 +462,28 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
             if image is None:
                 return _reject("could not decode that image")
             ref_id = svc.builder.add_reference(image=image, label=label or file.filename)
+            failure = await _reference_failure(svc.builder, ref_id)
+            if failure:
+                return failure
             return {"ref_id": ref_id, "thumb_url": f"/references/{ref_id}.jpg"}
 
-        source = (body or {}).get("from", "largest_person")
+        body = {}
+        if request.headers.get("content-type", "").split(";", 1)[0] == "application/json":
+            try:
+                body = await request.json()
+            except ValueError:
+                return _reject("invalid reference JSON")
+            if not isinstance(body, dict):
+                return _reject("reference JSON must be an object")
+            label = body.get("label") or label
+        source = body.get("from", "largest_person")
         vector, detail = _embedding_from_frame(svc, source)
         if vector is None:
             return _reject(detail)
         ref_id = svc.builder.add_reference(vector=vector, label=label or source)
+        failure = await _reference_failure(svc.builder, ref_id)
+        if failure:
+            return failure
         return {"ref_id": ref_id, "thumb_url": f"/references/{ref_id}.jpg"}
 
     @app.get("/references")
@@ -413,16 +535,72 @@ def create_app(svc: Service, *, run_threads: bool = True) -> FastAPI:
 
 
 # --- helpers -------------------------------------------------------------
+class QueryUnavailable(RuntimeError):
+    pass
+
+
+async def _query_tracks(svc: Service, selector) -> list:
+    """Evaluate the complete Selector or fail explicitly."""
+    state = svc.loop.last_state
+    frame = svc.loop.view.frame
+    if not state or not state.camera_ok or frame is None:
+        raise QueryUnavailable("no current camera frame")
+
+    if selector.ref_id and selector.ref_id not in set(state.refs):
+        raise QueryUnavailable(f"unknown reference {selector.ref_id!r}")
+
+    world = svc.loop.world
+    active_prompts = set(world.prompt_union(world.behaviors.values())) if world else set()
+    active_attributes = set(svc.loop.shared.bank.phrases)
+    covered = (set(selector.prompts()) <= active_prompts
+               and set(selector.attribute_texts()) <= active_attributes)
+
+    if covered and svc.loop.last_tracks is not None:
+        spec = BehaviorSpec(kind="highlight", subject=selector, notify=False)
+        query = Behavior("__query__", spec)
+        raw = svc.loop.last_tracks
+        query_frame = Frame(
+            image=frame, tracks=raw, bank=svc.loop.shared.bank,
+            now=state.ts, shape=frame.shape[:2], trails=svc.loop.shared.paths(),
+        )
+        indices = query.filter(query_frame)
+        if selector.pick != "all":
+            chosen = query.choose(query_frame, indices)
+            indices = [chosen] if chosen is not None else []
+        normalized = svc.loop._tracks(raw, frame.shape)
+        return [normalized[int(i)] for i in indices]
+
+    if selector.include or selector.exclude or selector.ref_id or selector.relate:
+        raise QueryUnavailable(
+            "the requested selector is not prepared in the live world; install "
+            "a behavior with that selector before querying it"
+        )
+
+    from starlette.concurrency import run_in_threadpool
+    import scene as scene_mod
+    try:
+        tracks = await run_in_threadpool(
+            scene_mod.sweep, svc.registry, frame, selector.detect, frame.shape)
+    except Exception as exc:
+        raise QueryUnavailable(f"query detector unavailable: {exc}") from exc
+    if selector.pick == "largest" and tracks:
+        tracks = [max(tracks, key=lambda item: item.area)]
+    elif selector.pick == "most_centered" and tracks:
+        tracks = [min(tracks, key=lambda item: item.cx * item.cx + item.cy * item.cy)]
+    elif selector.pick == "ref":
+        raise QueryUnavailable("pick 'ref' requires a prepared reference selector")
+    return tracks
+
+
 async def _sample(svc: Service, selector, window_s: float) -> list[int]:
-    """Count matching tracks over a window of published frames."""
-    wanted = set(selector.detect)
+    """Count complete selector matches over a window of published frames."""
     deadline = time.time() + window_s
     counts, seen = [], None
     while time.time() < deadline:
         state = svc.loop.last_state
         if state is not None and state.ts != seen:
             seen = state.ts
-            counts.append(sum(1 for t in state.tracks if t.label in wanted))
+            counts.append(len(await _query_tracks(svc, selector)))
         await asyncio.sleep(0.02)
     return counts
 
@@ -490,6 +668,19 @@ def _vocab_error(svc: Service, spec: BehaviorSpec) -> str | None:
 def _reject(reason: str) -> JSONResponse:
     log.warning("rejected: %s", reason)
     return JSONResponse(status_code=422, content={"detail": reason})
+
+
+async def _reference_failure(builder: Builder, ref_id: str) -> JSONResponse | None:
+    """References are usable when their 201 is returned, or fail explicitly."""
+    result = await asyncio.to_thread(builder.wait_reference, ref_id)
+    if result is None:
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "reference encoding timed out; try the image again"},
+        )
+    if isinstance(result, Rejected):
+        return _reject(result.reason)
+    return None
 
 
 async def _pump(ws: WebSocket, bus: Bus, replay: bool) -> None:

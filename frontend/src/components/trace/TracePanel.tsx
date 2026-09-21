@@ -49,16 +49,22 @@ export function TraceAside({ connected, onClear, live }: TraceProps) {
 }
 
 export function TracePanel({ entries, live }: TraceProps) {
-  const tail = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
 
-  // Pin to the newest entry. A trace that has to be scrolled during a demo
-  // is a trace nobody reads.
+  // Pin to the newest entry. A trace that has to be scrolled during a demo is a
+  // trace nobody reads.
+  //
+  // Set scrollTop on the box itself rather than calling scrollIntoView on a tail
+  // element: scrollIntoView scrolls every scrollable ancestor, and the accordion
+  // around this panel is one of them. An arriving entry would drag the Events and
+  // Behaviours sections out of view several times a second.
   useEffect(() => {
-    tail.current?.scrollIntoView({ block: 'end' });
+    const el = box.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [entries.length]);
 
   return (
-    <div className="panel-scroll">
+    <div className="panel-scroll" ref={box}>
       {!entries.length && (
         <p className="empty-row">
           {live
@@ -81,7 +87,6 @@ export function TracePanel({ entries, live }: TraceProps) {
           </li>
         ))}
       </ol>
-      <div ref={tail} />
     </div>
   );
 }

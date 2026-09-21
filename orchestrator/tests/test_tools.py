@@ -39,7 +39,7 @@ HIGHLIGHT = {
 def test_every_capability_the_agent_needs_has_a_tool(tools):
     assert set(tools) == {
         "start_behavior", "stop_behavior", "clear_behaviors", "list_behaviors",
-        "probe_phrases", "count_objects", "look", "describe_scene",
+        "wait_for_behavior", "probe_phrases", "count_objects", "look", "describe_scene",
         "add_reference", "set_model", "set_hud", "say",
     }
 
@@ -139,7 +139,7 @@ async def test_a_watch_with_a_near_trigger_installs(tools, pipeline):
     assert pipeline.behaviors["b1"]["state"] == "ARMING"
 
 
-async def test_installing_files_the_wording_for_next_time(tools, memory):
+async def test_installing_does_not_claim_that_the_target_was_acquired(tools, memory):
     await tools["start_behavior"].ainvoke({
         "kind": "track",
         "subject": {"detect": ["a yellow rubber duck"], "pick": "largest"},
@@ -147,8 +147,8 @@ async def test_installing_files_the_wording_for_next_time(tools, memory):
     })
 
     remembered = memory.suggest("the duck")
-    assert any(r.phrase == "a yellow rubber duck" and r.outcome == "acquired"
-               for r in remembered)
+    assert not any(r.phrase == "a yellow rubber duck" and r.outcome == "acquired"
+                   for r in remembered)
 
 
 async def test_stopping_one_behavior_leaves_the_others(tools, pipeline):

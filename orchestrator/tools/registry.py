@@ -13,6 +13,7 @@ exception that would end the turn.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -21,9 +22,12 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from app.trace import BUS
+from config import CFG
 from contracts import BehaviorSpec, Selector
 from memory.store import PhraseMemory
 from tools.perception import Perception
+from tools.scene import answer_scene
+from tools.waiting import wait_for_state
 
 log = logging.getLogger("orchestrator.tools")
 
@@ -90,15 +94,43 @@ class SayArgs(BaseModel):
     text: str = Field(description="One short sentence, spoken aloud to the operator.")
 
 
+class WaitArgs(BaseModel):
+    behavior_id: str = Field(description="The behavior id returned by start_behavior.")
+    state: str = Field(default="REACHED", description="State to wait for, e.g. REACHED for pan_to.")
+    timeout_s: float = Field(default=60, gt=0, le=90)
+
+
 def build_tools(perception: Perception, memory: PhraseMemory,
-                turn: str = "") -> list[StructuredTool]:
+                turn: str = "",
+                installations: dict[str, dict[str, Any]] | None = None,
+                ) -> list[StructuredTool]:
     """Bind the tools for one turn, so tracing carries the turn id."""
+    receipts = installations if installations is not None else {}
 
     def trace_call(name: str, detail: str, **data: Any) -> None:
         BUS.emit("tool_call", name, detail, turn=turn, **data)
 
     def trace_result(name: str, detail: str, ok: bool = True, **data: Any) -> None:
-        BUS.emit("tool_result" if ok else "error", name, detail, turn=turn, **data)
+        BUS.emit("tool_result" if ok else "error", name, detail,
+                 turn=turn, ok=ok, **data)
+
+    async def await_operation(result: dict[str, Any], final: str) -> tuple[bool, str]:
+        operation_id = result.get("operation_id")
+        if not operation_id:  # compatibility with an older pipeline/fakes
+            return True, final
+        deadline = asyncio.get_running_loop().time() + CFG.tool_timeout_s
+        last: dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            checked = await perception.operation_status(operation_id)
+            if checked["ok"]:
+                last = checked
+                if checked.get("status") == final:
+                    return True, final
+                if checked.get("status") == "failed":
+                    return False, str(checked.get("detail") or "operation failed")
+            await asyncio.sleep(0.05)
+        return False, str((last or {}).get("detail")
+                          or f"operation was not confirmed within {CFG.tool_timeout_s:.0f}s")
 
     # 1. Behaviours ---------------------------------------------------------
 
@@ -115,14 +147,30 @@ def build_tools(perception: Perception, memory: PhraseMemory,
                     f"Fix the call and try again — this message names what was wrong.")
 
         behavior_id = result.get("id", "?")
+        deadline = asyncio.get_running_loop().time() + CFG.tool_timeout_s
+        status: dict[str, Any] | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            checked = await perception.behavior_status(behavior_id)
+            if checked["ok"]:
+                status = checked
+                if checked.get("status") in {"installed", "failed"}:
+                    break
+            await asyncio.sleep(0.05)
+
+        if not status or status.get("status") != "installed":
+            detail = ((status or {}).get("detail")
+                      or f"installation was not confirmed within {CFG.tool_timeout_s:.0f}s")
+            trace_result("start_behavior", detail, ok=False,
+                         behavior_id=behavior_id, spec=payload)
+            return (f"NOT INSTALLED: {behavior_id}: {detail}. "
+                    "Do not claim this behavior is running.")
+
+        receipts[behavior_id] = payload
         trace_result("start_behavior", f"{behavior_id} · {spec.kind} · {label}",
-                     behavior_id=behavior_id)
-        # File the wording against the outcome, so the next run has a prior.
-        memory.remember_outcome(label, spec.subject.detect, acquired=True,
-                                note=f"installed as {spec.kind}")
-        return (f"Started {behavior_id}: {spec.kind} on {spec.subject.summary()}. "
-                f"It is installed between two frames; watch its match count to "
-                f"tell whether the wording is working.")
+                     behavior_id=behavior_id, spec=payload, ok=True)
+        return (f"Installed {behavior_id}: {spec.kind} on {spec.subject.summary()}. "
+                "It will keep running every frame until explicitly stopped. "
+                "Zero matches means it is still looking, not that it ended.")
 
     async def stop_behavior(behavior_id: str) -> str:
         trace_call("stop_behavior", behavior_id)
@@ -130,7 +178,14 @@ def build_tools(perception: Perception, memory: PhraseMemory,
         if not result["ok"]:
             trace_result("stop_behavior", result["error"], ok=False)
             return f"Could not stop {behavior_id}: {result['error']}"
-        trace_result("stop_behavior", f"removed {behavior_id}")
+        confirmed, detail = await await_operation(result, "removed")
+        if not confirmed:
+            trace_result("stop_behavior", detail, ok=False,
+                         behavior_id=behavior_id)
+            return f"Could not confirm stopping {behavior_id}: {detail}"
+        receipts.pop(behavior_id, None)
+        trace_result("stop_behavior", f"removed {behavior_id}",
+                     behavior_id=behavior_id, ok=True)
         return f"Stopped {behavior_id}."
 
     async def clear_behaviors() -> str:
@@ -139,7 +194,12 @@ def build_tools(perception: Perception, memory: PhraseMemory,
         if not result["ok"]:
             trace_result("clear_behaviors", result["error"], ok=False)
             return f"Could not clear: {result['error']}"
-        trace_result("clear_behaviors", "pipeline is idle")
+        confirmed, detail = await await_operation(result, "cleared")
+        if not confirmed:
+            trace_result("clear_behaviors", detail, ok=False)
+            return f"Could not confirm clearing behaviors: {detail}"
+        receipts.clear()
+        trace_result("clear_behaviors", "pipeline is idle", ok=True)
         return "Cleared every behaviour. The pipeline is idle."
 
     async def list_behaviors() -> str:
@@ -147,6 +207,14 @@ def build_tools(perception: Perception, memory: PhraseMemory,
         if not result["ok"]:
             return f"Could not read the behaviour list: {result['error']}"
         return _json(result.get("behaviors", []))
+
+    async def wait_for_behavior(behavior_id: str, state: str = "REACHED",
+                                timeout_s: float = 60) -> str:
+        trace_call("wait_for_behavior", f"{behavior_id} → {state}")
+        result = await wait_for_state(perception, behavior_id, state, timeout_s)
+        detail = f"{behavior_id} reached {state}" if result["ok"] else result["error"]
+        trace_result("wait_for_behavior", detail, ok=result["ok"])
+        return detail
 
     # 2. Asking the pipeline ------------------------------------------------
 
@@ -159,8 +227,14 @@ def build_tools(perception: Perception, memory: PhraseMemory,
             return (f"Probe failed: {result['error']}. Proceed with your best "
                     f"guess — send several phrasings, specific through general.")
 
+        if result.get("detail"):
+            detail = str(result["detail"])
+            trace_result("probe_phrases", detail, ok=False)
+            return (f"Probe failed: {detail}. Proceed with a best-effort standing "
+                    "behavior; a probe failure must not cancel the instruction.")
+
         results = result.get("results", [])
-        memory.remember_probe(subject, results)
+        await asyncio.to_thread(memory.remember_probe, subject, results)
 
         best = result.get("best")
         advice = result.get("advice", "")
@@ -207,12 +281,17 @@ def build_tools(perception: Perception, memory: PhraseMemory,
                      objects=objects, swept=result.get("swept"))
 
         lines = [f"The camera can see: {summary or 'nothing it recognises'}."]
+        lines.append(
+            "Treat the detection summary as grounding; do not contradict it "
+            "without clear visual evidence.")
         if objects:
             lines.append("Objects: " + _json(objects))
         if result.get("detail"):
             lines.append(f"Note: {result['detail']}")
-        lines.append("Answer the operator's question from this. It is what the "
-                     "detector actually sees, so do not contradict it.")
+        try:
+            lines.append("Visual answer: " + await answer_scene(perception, question, result))
+        except Exception as exc:
+            lines.append(f"Visual inspection failed: {exc}. Only the detection summary is available.")
         return "\n".join(lines)
 
     # 3. References, model, HUD ---------------------------------------------
@@ -235,6 +314,10 @@ def build_tools(perception: Perception, memory: PhraseMemory,
         if not result["ok"]:
             trace_result("set_model", result["error"], ok=False)
             return f"Could not switch model: {result['error']}"
+        confirmed, detail = await await_operation(result, "switched")
+        if not confirmed:
+            trace_result("set_model", detail, ok=False)
+            return f"Could not confirm model switch: {detail}"
         trace_result("set_model", f"now {name}")
         return (f"Switched to {name}. Behaviours it cannot serve are paused with "
                 f"a reason and resume on their own — do not restart them.")
@@ -273,6 +356,10 @@ def build_tools(perception: Perception, memory: PhraseMemory,
              "What is running right now, with state and match counts. You are "
              "given this at the start of each turn; call it only to re-check "
              "after changing something."),
+        tool(wait_for_behavior, "wait_for_behavior",
+             "Wait for a behavior's state. After pan_to, wait for REACHED before counting. "
+             "If it times out or is stopped, explain that the turn was not completed; do not count yet.",
+             WaitArgs),
         tool(probe_phrases, "probe_phrases",
              "Ask the detector whether these wordings find anything in this "
              "room right now. The difference between a behaviour that works "

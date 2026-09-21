@@ -83,7 +83,15 @@
 /* The camera fills its column; the video itself is the only thing in it. */
 .panel-video { flex: 1 1 auto; min-height: 0; }
 
-/* Instruction sizes to its content, and gives the rest to the logs. */
+/* Instruction sizes to its content, and gives the rest to the logs.
+
+   Do NOT put a max-height on this. The composer cannot shrink — a mic button,
+   a textarea, the chips and the SEND/+IMAGE/STOP row are all fixed-height —
+   and `.panel` clips its overflow, so a cap does not squeeze the panel, it
+   cuts the buttons off the bottom. The room for the logs is bought by keeping
+   the *content* small (see the transcript cap and the composer sizes in
+   panels.css), which is the only way the panel is always exactly as tall as
+   what is in it and can never clip. */
 .panel-chat { flex: 0 0 auto; }
 
 .panel-scroll {
@@ -137,12 +145,16 @@
 
 /* ---------- accordion ---------- */
 
+/* The logs take everything the instruction above them does not need. No floor:
+   the panel above cannot shrink, so a floor here would push the last sections
+   off the bottom of the column rather than making room. `overflow: auto` is
+   what handles a short window. */
 .accordion {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   overflow: auto;
 }
 
@@ -156,8 +168,9 @@
   overflow: hidden;
 }
 
-/* An open section takes a share of the height; a closed one costs a header. */
-.fold.open { flex: 1 1 0; min-height: 120px; }
+/* An open section takes a share of the height; a closed one costs a header.
+   96px is what lets three be open at once without the accordion scrolling. */
+.fold.open { flex: 1 1 0; min-height: 96px; }
 
 .fold-head {
   margin: 0;
@@ -173,14 +186,16 @@
   align-items: center;
   gap: 10px;
   font-family: var(--ttc);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--plate);
   background: transparent;
   border: 0;
-  padding: 10px 16px;
+  /* Five headers are five headers whether or not anything is open, so they are
+     kept tight: at the old padding they cost 270px before a row was drawn. */
+  padding: 7px 14px;
   cursor: pointer;
   text-align: left;
 }
@@ -199,6 +214,6 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 12px 16px 14px;
+  padding: 10px 14px 12px;
   overflow: hidden;
 }

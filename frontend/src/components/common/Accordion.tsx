@@ -11,7 +11,10 @@ export interface Section {
   render: () => ReactNode;
 }
 
-const STORE_KEY = 'retask.accordion.v1';
+// v2: the panel above used to take the whole column, so anyone who used the
+// console before that was fixed has a stored set from when nothing was worth
+// opening. Bumping the key applies the new defaults once.
+const STORE_KEY = 'retask.accordion.v2';
 
 /**
  * Stacked sections, any number open at once.

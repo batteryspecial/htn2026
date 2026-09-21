@@ -15,6 +15,8 @@ retriever fused in.
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 import pytest
 
 from memory.store import PhraseMemory, PhraseRecord
@@ -183,3 +185,43 @@ def test_a_search_that_blows_up_returns_nothing_rather_than_raising(memory):
 
     assert memory.suggest("anything at all") == []
     assert memory.brief("anything at all") == ""
+
+
+def test_unrelated_vector_neighbors_do_not_become_a_prior(memory, monkeypatch):
+    """Hybrid/vector rankings also return rows for completely unknown names."""
+    neighbors = [
+        asdict(PhraseRecord(phrase="rubber duck", subject="yellow rubber duck",
+                            max_conf=0.58, found=11)),
+        asdict(PhraseRecord(phrase="person", subject="a person",
+                            max_conf=0.88, found=10)),
+    ]
+    monkeypatch.setattr(memory, "_search", lambda *_args: neighbors)
+
+    assert memory.brief("please follow my Walnut") == ""
+    assert memory.brief("The pipeline reported: no frame for infs. Event type: camera_lost.") == ""
+    assert "rubber duck" in memory.brief("please follow the yellow duck")
+    assert '"person"' not in memory.brief("please follow the yellow duck")
+
+
+def test_generic_words_and_measurement_notes_are_not_subject_matches(memory, monkeypatch):
+    monkeypatch.setattr(memory, "_search", lambda *_args: [asdict(PhraseRecord(
+        phrase="rubber duck", subject="follow my rubber duck",
+        note="measured beside a walnut on the table", max_conf=0.58, found=11))])
+
+    assert memory.suggest("please follow my Walnut") == []
+
+
+def test_a_learned_name_can_retrieve_the_measured_detector_phrase(memory):
+    memory.remember(PhraseRecord(phrase="brown dog", subject="Walnut",
+                                 max_conf=0.7, found=4))
+
+    assert [r.phrase for r in memory.suggest("please follow my Walnut")] == ["brown dog"]
+
+
+def test_in_process_search_matches_subject_words_in_a_full_instruction(memory):
+    memory._table = None
+    memory.remember(PhraseRecord(phrase="brown dog", subject="Walnut",
+                                 max_conf=0.7, found=4))
+
+    assert [r.phrase for r in memory.suggest("please follow my Walnut")] == ["brown dog"]
+    assert memory.suggest("please follow my pencil") == []

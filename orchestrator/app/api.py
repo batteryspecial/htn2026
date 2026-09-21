@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent.runner import AgentRunner, Attachment
 from app.trace import BUS, TraceEntry
+from app.model_status import MODEL_STATUS
 from config import CFG
 from events.watcher import EventWatcher
 from memory.store import PhraseMemory
@@ -38,7 +39,6 @@ log = logging.getLogger("orchestrator.api")
 #: name that does not fit.
 STAGE_OF = {
     "user": "received",
-    "reply": "active",
 }
 
 
@@ -75,7 +75,8 @@ def create_app(*, watch_events: bool = True) -> FastAPI:
 
     @app.post("/chat")
     async def chat(text: str = Form(default=""),
-                   images: list[UploadFile] = File(default=[])):
+                   images: list[UploadFile] = File(default=[]),
+                   turn: str | None = Form(default=None)):
         """One operator turn, with optional photos.
 
         An upload is registered with perception as a reference *before* the
@@ -94,9 +95,25 @@ def create_app(*, watch_events: bool = True) -> FastAPI:
             for f in images
         ]
 
-        result = await runner.user_turn(text, attachments)
+        try:
+            result = await runner.user_turn(text, attachments, turn=turn)
+        except asyncio.CancelledError:
+            return JSONResponse(status_code=409, content={"detail": "Turn stopped"})
         return {"turn": result.turn, "reply": result.reply,
-                "seconds": round(result.seconds, 3)}
+                "seconds": round(result.seconds, 3), "ok": result.ok,
+                "outcome": result.outcome, "behaviors": result.behaviors}
+
+    @app.post("/stop")
+    async def stop(body: dict[str, Any] | None = None):
+        await watcher.stop()
+        try:
+            result = await runner.stop((body or {}).get("turn"))
+        finally:
+            if watch_events:
+                watcher.start()
+        if not result["ok"]:
+            return JSONResponse(status_code=502, content={"detail": result["error"]})
+        return {"stopped": True}
 
     @app.post("/instruction")
     async def instruction(body: dict[str, Any]):
@@ -110,7 +127,8 @@ def create_app(*, watch_events: bool = True) -> FastAPI:
 
         result = await runner.user_turn(text)
         return {"instruction_id": result.turn, "reply": result.reply,
-                "seconds": round(result.seconds, 3)}
+                "seconds": round(result.seconds, 3), "ok": result.ok,
+                "outcome": result.outcome, "behaviors": result.behaviors}
 
     # 2. Streams ---------------------------------------------------------
 
@@ -143,6 +161,8 @@ def create_app(*, watch_events: bool = True) -> FastAPI:
                 stage = STAGE_OF.get(entry.kind)
                 if entry.kind == "error":
                     stage = "failed"
+                elif entry.kind == "reply" and entry.data.get("ok") is False:
+                    stage = "failed"
                 elif entry.kind == "tool_result" and entry.label == "start_behavior":
                     stage = "applied"
                 if not stage:
@@ -168,6 +188,7 @@ def create_app(*, watch_events: bool = True) -> FastAPI:
             "model": CFG.model,
             "provider": CFG.provider,
             "has_key": bool(CFG.api_key),
+            "model_connection": MODEL_STATUS.view(),
             "perception": {
                 "base": perception.base,
                 "up": downstream["ok"],

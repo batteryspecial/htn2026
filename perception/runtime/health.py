@@ -76,9 +76,10 @@ class Health:
 
     # 4. Emitting -------------------------------------------------------
     def event(self, type_: str, detail: str, **data) -> Event:
-        """System events carry no behaviour id and always wake the agent."""
+        """Emit a system event, optionally correlated to a failed behavior."""
+        behavior_id = data.pop("behavior_id", None)
         ev = Event(id=uuid.uuid4().hex[:10], type=type_, ts=time.time(),
-                   behavior_id=None, detail=detail, data=data, notify=True)
+                   behavior_id=behavior_id, detail=detail, data=data, notify=True)
         log.info("system event %s: %s", type_, detail)
         self.emit(ev)
         return ev

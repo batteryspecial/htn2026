@@ -67,6 +67,16 @@ def test_a_posted_behavior_starts_running(client):
     assert client.rig.state_of(bid) == "ACTIVE"
 
 
+def test_behavior_status_confirms_frame_loop_installation(client):
+    bid = client.post("/behaviors", json=spec()).json()["id"]
+    client.rig.settle()
+
+    status = client.get(f"/behaviors/{bid}/status").json()
+
+    assert status["id"] == bid
+    assert status["status"] == "installed"
+
+
 @pytest.mark.parametrize("bad", [
     {},
     {"kind": "highlight"},
@@ -288,6 +298,40 @@ def test_look_can_be_narrowed(client):
     assert [t["label"] for t in tracks] == ["other"]
 
 
+def test_query_applies_pick_instead_of_only_filtering_labels(client):
+    client.post("/behaviors", json=spec(detect=("person",)))
+    client.rig.settle()
+    client.rig.frames(4, seen=boxes(
+        ("person", 180, 240, 60), ("person", 440, 240, 140)))
+
+    tracks = client.post("/query/look", json={
+        "selector": {"detect": ["person"], "pick": "largest"},
+    }).json()["tracks"]
+
+    assert len(tracks) == 1
+    assert tracks[0]["area"] > 0.03
+
+
+def test_query_rejects_an_unknown_reference_instead_of_returning_everyone(client):
+    client.post("/behaviors", json=spec(detect=("person",)))
+    client.rig.settle()
+    client.rig.frames(4, seen=boxes(THING))
+
+    response = client.post("/query/look", json={
+        "selector": {"detect": ["person"], "ref_id": "missing", "pick": "ref"},
+    })
+
+    assert response.status_code == 409
+    assert "unknown reference" in response.json()["detail"]
+
+
+def test_probe_without_a_frame_is_unavailable_not_a_zero_measurement(client):
+    response = client.post("/probe", json={"phrases": ["person"]})
+
+    assert response.status_code == 503
+    assert "no frame" in response.json()["detail"]
+
+
 # 6. Live channels --------------------------------------------------------
 def test_state_socket_delivers_frames(client):
     client.post("/behaviors", json=spec())
@@ -364,3 +408,75 @@ def test_one_encode_is_shared_by_every_viewer(client):
 
 def test_the_debug_page_loads(client):
     assert client.get("/").status_code == 200
+
+
+# 8. References -----------------------------------------------------------
+def test_an_uploaded_reference_is_registered_and_matches_the_subject(client):
+    import cv2
+    import numpy as np
+
+    image = np.full((64, 64, 3), (0, 0, 255), dtype=np.uint8)
+    encoded, jpeg = cv2.imencode(".jpg", image)
+    assert encoded
+    result = client.post("/references", files={
+        "file": ("target.jpg", jpeg.tobytes(), "image/jpeg")},
+        data={"label": "my red target"})
+    assert result.status_code == 201
+    ref_id = result.json()["ref_id"]
+    bid = client.post("/behaviors", json=spec(ref_id=ref_id)).json()["id"]
+    client.rig.paint("red", "blue")
+    client.rig.settle()
+    client.rig.frames(6, seen=boxes(
+        ("thing", 160, 240, 100), ("thing", 480, 240, 100)))
+
+    refs = client.get("/references").json()["references"]
+    assert [(r["ref_id"], r["label"]) for r in refs] == [
+        (ref_id, "my red target")]
+    assert client.get(result.json()["thumb_url"]).content[:2] == b"\xff\xd8"
+    assert client.rig.view(bid).matches == 1
+    assert "behavior_failed" not in client.rig.types()
+
+
+def test_a_frame_reference_preserves_its_vector_id_and_label(client):
+    client.post("/behaviors", json=spec(detect=("person",)))
+    client.rig.paint("red")
+    client.rig.settle()
+    client.rig.frames(4, seen=boxes(("person", 320, 240, 100)))
+    result = client.post("/references", json={
+        "from": "largest_person", "label": "the operator"})
+    assert result.status_code == 201
+    ref_id = result.json()["ref_id"]
+    client.rig.settle()
+
+    refs = client.get("/references").json()["references"]
+    assert [(r["ref_id"], r["label"]) for r in refs] == [
+        (ref_id, "the operator")]
+    assert ref_id in client.rig.loop.world.ref_vectors
+    assert "behavior_failed" not in client.rig.types()
+
+
+def test_a_reference_that_cannot_be_encoded_is_rejected_before_201(tmp_path):
+    rig = Rig(tmp_path, attributes=False)
+    svc = Service(registry=rig.registry, capture=rig.capture, builder=rig.builder,
+                  loop=rig.loop, health=rig.health, events=rig.event_bus,
+                  states=rig.state_bus)
+    try:
+        with TestClient(create_app(svc, run_threads=False)) as client:
+            response = client.post("/references", files={
+                "file": ("target.jpg", b"not-an-image", "image/jpeg")})
+            assert response.status_code == 422
+
+        import cv2
+        import numpy as np
+
+        image = np.zeros((16, 16, 3), dtype=np.uint8)
+        encoded, jpeg = cv2.imencode(".jpg", image)
+        assert encoded
+        with TestClient(create_app(svc, run_threads=False)) as client:
+            response = client.post("/references", files={
+                "file": ("target.jpg", jpeg.tobytes(), "image/jpeg")})
+            assert response.status_code == 422
+            assert "CLIP" in response.json()["detail"]
+            assert client.get("/references").json()["references"] == []
+    finally:
+        rig.close()

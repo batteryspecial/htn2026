@@ -1,4 +1,4 @@
-/documents
+# documents/ contains the required agent prompt and belongs in the project.
 .env
 __pycache__/
 .lancedb/

@@ -145,6 +145,29 @@ async def test_a_tool_call_runs_and_the_loop_comes_back_for_another_thought(run,
     assert state["steps"] == 2
 
 
+async def test_a_standing_instruction_cannot_end_without_installing(
+        perception, memory, monkeypatch):
+    graph = build_graph(perception, memory)
+    model = says("I cannot see it yet.")
+    model = model.then(calls(("start_behavior", {
+        "kind": "watch",
+        "subject": {"detect": ["walnut", "whole walnut", "nut"]},
+        "params": {"triggers": [{"type": "missing", "after_s": 2.0}]},
+    }))).then(says("Watching for the walnut."))
+    monkeypatch.setattr("agent.graph.chat_model", lambda: model)
+
+    state = await graph.ainvoke({
+        "messages": opening_messages("watch the walnut", "user"),
+        "turn": "turn-1", "origin": "user",
+        "instruction": "watch the walnut", "image_urls": [],
+        "steps": 0, "started": 0.0, "require_installation": True,
+    }, {"recursion_limit": CFG.max_steps * 3 + 10})
+
+    assert state["ok"] is True
+    assert state["outcome"] == "applied"
+    assert state["behaviors"][0]["id"] == "b1"
+
+
 async def test_several_tool_calls_in_one_step_run_in_order(run, pipeline):
     """Stop the old one, then start the new one — that pair must not race."""
     model = calls(
@@ -155,8 +178,9 @@ async def test_several_tool_calls_in_one_step_run_in_order(run, pipeline):
 
     await run(model, "follow the dog instead")
 
-    assert pipeline.paths()[-2:] == ["/behaviors", "/behaviors"]
-    assert [c["method"] for c in pipeline.calls[-2:]] == ["DELETE", "POST"]
+    mutations = [c for c in pipeline.calls if c["method"] in {"DELETE", "POST"}
+                 and c["path"] == "/behaviors"]
+    assert [c["method"] for c in mutations[-2:]] == ["DELETE", "POST"]
 
 
 async def test_the_model_reads_a_refusal_and_fixes_its_own_call(run, pipeline):
@@ -245,8 +269,8 @@ async def test_a_tool_that_raises_does_not_end_the_turn(run, monkeypatch):
 
     original = build_tools
 
-    def patched(perception, memory, turn=""):
-        tools = original(perception, memory, turn)
+    def patched(perception, memory, turn="", installations=None):
+        tools = original(perception, memory, turn, installations)
         for tool in tools:
             if tool.name == "look":
                 tool.coroutine = exploding
@@ -316,5 +340,6 @@ def test_an_uploaded_image_rides_along_with_the_instruction():
 
     parts = messages[-1].content
     assert parts[0] == {"type": "text", "text": "track this one"}
-    assert parts[1]["type"] == "image_url"
-    assert parts[1]["image_url"]["url"].startswith("data:image/jpeg")
+    assert parts[1] == {"type": "text", "text": "Operator-provided reference image:"}
+    assert parts[2]["type"] == "image_url"
+    assert parts[2]["image_url"]["url"].startswith("data:image/jpeg")

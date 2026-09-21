@@ -2,10 +2,10 @@
 
 .btn {
   font-family: var(--ttc);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.12em;
-  padding: 12px 22px;
+  padding: 9px 18px;
   border: 3px solid var(--ink);
   background: var(--plate);
   color: var(--ink);
@@ -79,18 +79,18 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 10px 0 12px;
+  gap: 6px;
+  margin: 8px 0 9px;
 }
 
 .chip {
   font-family: var(--ttc);
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 700;
   color: var(--ink);
   background: var(--tile);
   border: 2px solid var(--ink);
-  padding: 7px 12px;
+  padding: 5px 10px;
   cursor: pointer;
 }
 

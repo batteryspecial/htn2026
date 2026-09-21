@@ -52,8 +52,8 @@ class Config:
     log_level: str = _s("LOG_LEVEL", "INFO")
 
     # 3. Agent loop ------------------------------------------------------
-    #: Hard cap on tool calls in one turn. The loop is a demo, not a budget.
-    max_steps: int = _i("ORCH_MAX_STEPS", 10)
+    #: Hard cap on model steps in one turn; each may request several tools.
+    max_steps: int = _i("ORCH_MAX_STEPS", 4)
     #: Wake the agent at most once per behaviour per this many seconds. A
     #: person standing near the duck would otherwise fire thirty times a
     #: second, and one alert that arrives beats a hundred that get dropped.
@@ -61,7 +61,8 @@ class Config:
     #: A tool call that takes longer than this is a demo that has stalled.
     tool_timeout_s: float = _f("ORCH_TOOL_TIMEOUT_S", 12.0)
     #: Frontier models stall occasionally; the frontend learned this the hard way.
-    llm_timeout_s: float = _f("ORCH_LLM_TIMEOUT_S", 45.0)
+    llm_timeout_s: float = _f("ORCH_LLM_TIMEOUT_S", 20.0)
+    turn_timeout_s: float = _f("ORCH_TURN_TIMEOUT_S", 35.0)
 
     # 4. Paths -----------------------------------------------------------
     documents: Path = ROOT / "documents"

@@ -119,7 +119,7 @@ with a reason and resumes by itself when a capable model returns.
 | `POST /behaviors` | start one → `{id}`; 422 with a reason the agent can act on |
 | `GET /behaviors` · `DELETE /behaviors/{id}` · `DELETE /behaviors` | list, stop one, stop all |
 | `POST /model` · `GET /models` | swap the detector; what this machine can do |
-| `POST /references` · `GET /references` · `GET /references/{id}.jpg` | register an appearance from an upload or from the frame |
+| `POST /references` · `GET /references` · `GET /references/{id}.jpg` | register an appearance; 201 means encoding completed and the id is usable |
 | `GET /health` · `GET /state` · `POST /hud` | status; full frame state; on-screen instruction |
 | `POST /query/count` · `POST /query/look` | median count over a window; what is visible now |
 | `POST /describe` | sweep the scene and hand back grounding plus a vision-model prompt |

@@ -11,11 +11,12 @@ import { SettingsDrawer } from './components/settings/SettingsDrawer';
 import { StatusBar } from './components/status/StatusBar';
 import { TraceAside, TracePanel } from './components/trace/TracePanel';
 import { EVENT_STAGE } from './config/constants';
-import { summarize } from './contracts/program';
+import { liveObjective } from './contracts/liveRun';
 import { useHistory } from './hooks/useHistory';
+import { useAgentRun } from './hooks/useAgentRun';
 import { useHotkeys } from './hooks/useHotkeys';
 import {
-  healthOf, leadBehavior, leadTrack, useBehaviorKinds, useModels,
+  healthOf, leadBehavior, leadTrack, useBehaviorKinds, useCameras, useModels,
   usePerceptionEvents, usePerceptionHealth, usePerceptionState,
 } from './hooks/usePerception';
 import { useRetaskRun } from './hooks/useRetaskRun';
@@ -26,7 +27,6 @@ import { useTrace } from './hooks/useTrace';
 import { useVideoStream } from './hooks/useVideoStream';
 import type { Reachability } from './services/perception';
 import { ReconnectingSocket } from './services/socket';
-import type { StageEvent } from './services/compilers';
 
 export default function App() {
   const { settings, update, compiler, perception, orchestrator } = useSettings();
@@ -43,29 +43,41 @@ export default function App() {
   const pipelineHealth = usePerceptionHealth(perception, pipelineBase);
   const { events, clear: clearEvents } = usePerceptionEvents(perception, pipelineBase);
   const { models, refresh: refreshModels } = useModels(perception, pipelineBase);
+  const { cameras, refresh: refreshCameras } = useCameras(perception, pipelineBase);
   const availableKinds = useBehaviorKinds(perception, pipelineBase);
 
   const behavior = leadBehavior(state);
   const track = leadTrack(state, behavior);
   const video = useVideoStream(settings.videoUrl);
+  const cameraOk = pipelineHealth?.up === true && pipelineHealth.health?.camera_ok === true;
+  const cameraVideo = {
+    ...video,
+    live: video.live && cameraOk,
+    note: !cameraOk ? (pipelineHealth?.detail ?? 'camera health unknown') : video.note,
+  };
 
   /* --------------------------------------------------------------- voice */
 
   const speak = useSpeech(settings.tts, settings.lang);
   const { entries, push: pushHistory } = useHistory();
 
-  const run = useRetaskRun({
+  const mockRun = useRetaskRun({
     settings, compiler, perception, availableKinds, speak, pushHistory,
   });
+  const agentRun = useAgentRun({ orchestrator, perception, speak, pushHistory, pipelineState: state });
+  const run = live ? agentRun : mockRun;
 
   // An alert the agent speaks between turns arrives on the trace socket, not
   // as a reply — it belongs in the transcript and out of the speakers.
-  const trace = useTrace(orchestrator, settings.apiBase, live, { onSay: run.alert });
+  const trace = useTrace(orchestrator, settings.apiBase, live, {
+    onSay: agentRun.alert, onEntry: agentRun.handleTrace,
+  });
 
   const textRef = useRef(text);
   textRef.current = text;
 
   const send = useCallback((value: string, images: File[] = []) => {
+    if (run.view.busy) return;
     setInterim(false);
     setText('');
     run.compile(value, images);
@@ -83,12 +95,13 @@ export default function App() {
 
   /* ------------------------------------------------------- stage sources */
 
-  const handleStage = run.handleStage;
+  const handleStage = mockRun.handleStage;
 
   // Pipeline events drive the stage strip. Only the three with a stage
   // equivalent are translated; the rest belong in the events panel, where
   // they are shown in full rather than flattened into a name that does not fit.
   useEffect(() => {
+    if (live) return;
     const socket = new ReconnectingSocket<Record<string, unknown>>(
       perception.eventsSocketUrl(),
       {
@@ -106,17 +119,7 @@ export default function App() {
     );
     socket.connect();
     return () => socket.close();
-  }, [handleStage, perception, pipelineBase]);
-
-  // The orchestrator's own status stream, only when it is in the loop.
-  useEffect(() => {
-    if (settings.mode !== 'live') return;
-    const socket = new ReconnectingSocket<StageEvent>(orchestrator.statusSocketUrl(), {
-      onMessage: handleStage,
-    });
-    socket.connect();
-    return () => socket.close();
-  }, [handleStage, orchestrator, settings.mode, settings.apiBase]);
+  }, [handleStage, perception, pipelineBase, live]);
 
   /* -------------------------------------------------------- compiler dot */
 
@@ -149,12 +152,22 @@ export default function App() {
   /* ------------------------------------------------------------ actions */
 
   const dropBehavior = useCallback((id: string) => {
-    perception.removeBehavior(id).catch(() => {});
-  }, [perception]);
+    perception.removeBehavior(id).catch((error: Error) => run.alert(`Could not remove behavior: ${error.message}`));
+  }, [perception, run.alert]);
 
   const selectModel = useCallback((name: string) => {
-    perception.setModel(name).then(refreshModels).catch(() => {});
-  }, [perception, refreshModels]);
+    perception.setModel(name).then(refreshModels)
+      .catch((error: Error) => run.alert(`Could not switch model: ${error.message}`));
+  }, [perception, refreshModels, run.alert]);
+
+  // The MJPEG <img> does not recover on its own from a stream that stopped
+  // mid-frame, and a camera switch stops it for a second or two. So reopen it
+  // rather than leaving the operator looking at a dead feed and a green dot.
+  const selectCamera = useCallback((name: string) => {
+    perception.setCamera({ name })
+      .then(() => { video.reconnect(); return refreshCameras(); })
+      .catch((error: Error) => run.alert(`Could not switch camera: ${error.message}`));
+  }, [perception, refreshCameras, run.alert, video]);
 
   const traceProps = {
     entries: trace.entries,
@@ -171,19 +184,19 @@ export default function App() {
         mode={settings.mode}
         compilerLabel={live ? settings.apiBase.replace(/^https?:\/\//, '') : 'mock adapter'}
         compiler={compilerReach}
-        camera={{ live: video.live, note: video.note }}
+        camera={{ live: cameraVideo.live, note: cameraVideo.note }}
         tts={settings.tts}
-        onCycleMode={() => update({ mode: nextMode(settings.mode) })}
+        onCycleMode={() => { if (!run.view.busy) update({ mode: nextMode(settings.mode) }); }}
         onToggleTts={() => update({ tts: !settings.tts })}
-        onOpenSettings={() => { refreshModels(); setDrawerOpen(true); }}
+        onOpenSettings={() => { refreshModels(); refreshCameras(); setDrawerOpen(true); }}
       />
 
       <main className="grid">
         {/* The camera is the thing the room is looking at. It gets the half. */}
         <div className="col col-camera">
           <CameraPanel
-            video={video}
-            objective={run.view.program ? summarize(run.view.program) : null}
+            video={cameraVideo}
+            objective={liveObjective(state)}
           />
         </div>
 
@@ -210,7 +223,7 @@ export default function App() {
 
           <Accordion
             className="col-logs"
-            initial={['events']}
+            initial={['trace', 'behaviors']}
             sections={[
               {
                 id: 'trace',
@@ -264,8 +277,11 @@ export default function App() {
         open={drawerOpen}
         settings={settings}
         models={models}
-        onSave={update}
+        cameras={cameras}
+        onSave={(prefs) => update(run.view.busy ? { ...prefs, mode: settings.mode } : prefs)}
         onSelectModel={selectModel}
+        onSelectCamera={selectCamera}
+        onRescanCameras={() => refreshCameras(true)}
         onClose={() => setDrawerOpen(false)}
       />
     </>

@@ -125,6 +125,16 @@ class FakePipeline:
                 self.behaviors.clear()
                 return httpx.Response(202, json={"cleared": True})
 
+        if path.startswith("/behaviors/") and path.endswith("/status") and method == "GET":
+            behavior_id = path.split("/")[2]
+            if behavior_id in self.behaviors:
+                return httpx.Response(200, json={
+                    "id": behavior_id, "status": "installed", "detail": None,
+                })
+            return httpx.Response(404, json={
+                "detail": f"unknown behaviour {behavior_id!r}",
+            })
+
         if path.startswith("/behaviors/") and method == "DELETE":
             return self._drop(path.rsplit("/", 1)[-1])
 

@@ -16,7 +16,9 @@ The loop is capped. A demo that thinks for twenty steps has already lost.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
 import time
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -26,9 +28,10 @@ from langchain_core.messages import (
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
-from agent.llm import NoModelConfigured, chat_model
+from agent.llm import NoModelConfigured, chat_model, vision_model
 from agent.prompts import EVENT_TURN, situation, system_prompt
 from app.trace import BUS
+from app.model_status import MODEL_STATUS
 from config import CFG
 from memory.store import PhraseMemory
 from tools.perception import Perception
@@ -49,6 +52,30 @@ class AgentState(TypedDict, total=False):
     steps: int
     started: float
     reply: str
+    ok: bool
+    spoken: bool
+    installations: dict[str, dict[str, Any]]
+    outcome: str
+    behaviors: list[dict[str, Any]]
+    running_before: int
+    enforcement_attempted: bool
+    require_installation: bool
+    pipeline_available: bool
+
+
+_STANDING = re.compile(
+    r"\b(watch|guard|monitor|track|follow|highlight|show|blur|hide|protect|"
+    r"alert|notify|tell me if|count .+ cross)\b", re.IGNORECASE,
+)
+
+
+def _standing_instruction(state: AgentState) -> bool:
+    instruction = state.get("instruction", "")
+    return (state.get("require_installation", False)
+            and state.get("pipeline_available", True)
+            and "registering it failed" not in instruction
+            and state.get("origin") == "user"
+            and bool(_STANDING.search(instruction)))
 
 
 def _text_of(message: AIMessage) -> str:
@@ -103,8 +130,8 @@ def build_graph(perception: Perception, memory: PhraseMemory):
 
         # The prior. Measured evidence for subjects like this one, which is
         # the thing that cannot fit in a system prompt and grows with use.
-        if state.get("instruction"):
-            prior = memory.brief(state["instruction"])
+        if state.get("instruction") and state.get("origin") == "user":
+            prior = await asyncio.to_thread(memory.brief, state["instruction"])
             if prior:
                 lines.append(prior)
                 BUS.emit("thought", "recalled phrasings",
@@ -113,27 +140,35 @@ def build_graph(perception: Perception, memory: PhraseMemory):
         BUS.emit("thought", "grounded",
                  f"{len(behaviors)} running", turn=turn, behaviors=behaviors)
 
-        return {"messages": [SystemMessage(content="\n\n".join(lines))]}
+        return {
+            "messages": [SystemMessage(content="\n\n".join(lines))],
+            "installations": state.get("installations", {}),
+            "running_before": len(behaviors),
+            "pipeline_available": bool(health["ok"]),
+        }
 
     async def think(state: AgentState) -> dict[str, Any]:
         """One model call. Either it asks for tools or it answers."""
         turn = state["turn"]
-        tools = build_tools(perception, memory, turn)
+        installations = state.setdefault("installations", {})
+        tools = build_tools(perception, memory, turn, installations)
 
         try:
-            model = chat_model().bind_tools(tools)
+            model = (vision_model() if state.get("image_urls") else chat_model()).bind_tools(tools)
         except NoModelConfigured as exc:
             BUS.emit("error", "no model", str(exc), turn=turn)
-            return {"reply": str(exc),
+            return {"reply": str(exc), "ok": False,
                     "messages": [AIMessage(content=str(exc))]}
 
         try:
             reply: AIMessage = await model.ainvoke(state["messages"])
+            MODEL_STATUS.success()
         except Exception as exc:                        # noqa: BLE001
             log.exception("model call failed")
+            MODEL_STATUS.failure(exc)
             detail = f"the model call failed: {exc}"
             BUS.emit("error", "model", detail, turn=turn)
-            return {"reply": detail, "messages": [AIMessage(content=detail)]}
+            return {"reply": detail, "ok": False, "messages": [AIMessage(content=detail)]}
 
         thought = _text_of(reply)
         if thought and reply.tool_calls:
@@ -149,7 +184,9 @@ def build_graph(perception: Perception, memory: PhraseMemory):
         leaves the pipeline empty.
         """
         turn = state["turn"]
-        tools = {t.name: t for t in build_tools(perception, memory, turn)}
+        installations = state.setdefault("installations", {})
+        tools = {t.name: t for t in build_tools(
+            perception, memory, turn, installations)}
         last: AIMessage = state["messages"][-1]
         results: list[ToolMessage] = []
 
@@ -168,7 +205,12 @@ def build_graph(perception: Perception, memory: PhraseMemory):
                     BUS.emit("error", call["name"], str(exc)[:300], turn=turn)
             results.append(ToolMessage(content=str(text), tool_call_id=call["id"]))
 
-        return {"messages": results}
+        return {
+            "messages": results,
+            "spoken": state.get("spoken", False)
+            or any(call["name"] == "say" for call in last.tool_calls),
+            "installations": installations,
+        }
 
     async def finish(state: AgentState) -> dict[str, Any]:
         """The reply the operator hears."""
@@ -177,23 +219,63 @@ def build_graph(perception: Perception, memory: PhraseMemory):
         reply = state.get("reply") or (
             _text_of(last) if isinstance(last, AIMessage) else "")
 
+        limited = isinstance(last, AIMessage) and bool(last.tool_calls)
+        if limited:
+            reply = "I reached the step limit before finishing. Check the running behaviors before retrying."
         if not reply:
             reply = "Done."
+        unsatisfied = (_standing_instruction(state)
+                       and not state.get("installations")
+                       and not state.get("running_before", 0)
+                       and state.get("ok", True))
+        if unsatisfied:
+            reply = ("The standing instruction was not installed. Nothing is "
+                     "running; retry the instruction or check the pipeline error.")
+        ok = state.get("ok", True) and not limited and not unsatisfied
+        if state.get("origin") == "event" and not state.get("spoken") and reply != "Done." and ok:
+            BUS.emit("say", reply, turn=turn)
 
         elapsed = time.time() - state.get("started", time.time())
-        BUS.emit("reply", reply, turn=turn, seconds=round(elapsed, 2))
+        behaviors = [
+            {"id": behavior_id, "spec": spec}
+            for behavior_id, spec in state.get("installations", {}).items()
+        ]
+        outcome = "error" if not ok else ("applied" if behaviors else "reply")
+        BUS.emit("reply", reply, turn=turn, seconds=round(elapsed, 2),
+                 ok=ok, origin=state.get("origin", "user"),
+                 outcome=outcome, behaviors=behaviors)
         BUS.emit("timer", "turn complete", f"{elapsed:.2f}s",
                  turn=turn, seconds=round(elapsed, 2))
-        return {"reply": reply}
+        return {"reply": reply, "ok": ok, "outcome": outcome,
+                "behaviors": behaviors}
 
-    def route(state: AgentState) -> Literal["act", "finish"]:
+    async def enforce_installation(state: AgentState) -> dict[str, Any]:
+        BUS.emit("thought", "installation required",
+                 "standing instruction has no behavior yet", turn=state["turn"])
+        return {
+            "messages": [SystemMessage(content=(
+                "This is a standing camera instruction and nothing is running. "
+                "You must now call start_behavior with a best-effort selector. "
+                "Do not probe again, wait for a match, or ask for clarification. "
+                "After confirmed installation, set the HUD and answer briefly."
+            ))],
+            "enforcement_attempted": True,
+        }
+
+    def route(state: AgentState) -> Literal["act", "enforce", "finish"]:
         last = state["messages"][-1]
         if not isinstance(last, AIMessage) or not last.tool_calls:
+            if (_standing_instruction(state)
+                    and not state.get("installations")
+                    and not state.get("running_before", 0)
+                    and not state.get("enforcement_attempted", False)
+                    and state.get("ok", True)):
+                return "enforce"
             return "finish"
         if state.get("steps", 0) >= CFG.max_steps:
             # Stop rather than loop. Whatever is installed stays installed.
             BUS.emit("error", "step limit",
-                     f"stopped after {CFG.max_steps} tool calls", turn=state["turn"])
+                     f"stopped after {CFG.max_steps} model steps", turn=state["turn"])
             return "finish"
         return "act"
 
@@ -201,29 +283,40 @@ def build_graph(perception: Perception, memory: PhraseMemory):
     graph.add_node("ground", ground)
     graph.add_node("think", think)
     graph.add_node("act", act)
+    graph.add_node("enforce", enforce_installation)
     graph.add_node("finish", finish)
 
     graph.add_edge(START, "ground")
     graph.add_edge("ground", "think")
-    graph.add_conditional_edges("think", route, {"act": "act", "finish": "finish"})
+    graph.add_conditional_edges("think", route, {
+        "act": "act", "enforce": "enforce", "finish": "finish",
+    })
     graph.add_edge("act", "think")
+    graph.add_edge("enforce", "think")
     graph.add_edge("finish", END)
 
     return graph.compile()
 
 
 def opening_messages(instruction: str, origin: str,
-                     image_urls: list[str] | None = None) -> list[AnyMessage]:
+                     image_urls: list[str] | None = None,
+                     live_image_url: str | None = None) -> list[AnyMessage]:
     """The system prompt, then the turn itself."""
     messages: list[AnyMessage] = [SystemMessage(content=system_prompt())]
 
     if origin == "event":
         messages.append(SystemMessage(content=EVENT_TURN))
 
-    if image_urls:
+    if image_urls or live_image_url:
         parts: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
-        for url in image_urls:
+        for url in image_urls or []:
+            parts.append({"type": "text", "text": "Operator-provided reference image:"})
             parts.append({"type": "image_url", "image_url": {"url": url}})
+        if live_image_url:
+            parts.append({"type": "text", "text": (
+                "Current unannotated camera frame. Use it to ground the operator's "
+                "words before asking what a visible object is:")})
+            parts.append({"type": "image_url", "image_url": {"url": live_image_url}})
         messages.append(HumanMessage(content=parts))
     else:
         messages.append(HumanMessage(content=instruction))

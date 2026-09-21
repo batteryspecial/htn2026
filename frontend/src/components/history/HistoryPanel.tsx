@@ -4,7 +4,7 @@ import { seconds } from '../../utils/format';
 /** The kinds a run installed, or why it has none. */
 function tagFor(entry: HistoryEntry): string {
   const behaviors = entry.program?.behaviors;
-  if (!behaviors?.length) return 'error';
+  if (!behaviors?.length) return entry.ok ? 'reply' : 'error';
   const kinds = [...new Set(behaviors.map((b) => b.kind))];
   return kinds.length === 1 ? kinds[0] : `${behaviors.length} behaviours`;
 }

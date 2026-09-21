@@ -3,10 +3,14 @@ import type { ChatMessage } from '../../hooks/useRetaskRun';
 import { seconds } from '../../utils/format';
 
 export function Transcript({ messages }: { messages: ChatMessage[] }) {
-  const tail = useRef<HTMLDivElement>(null);
+  const box = useRef<HTMLDivElement>(null);
 
+  // scrollTop on the box, not scrollIntoView on a tail element: scrollIntoView
+  // scrolls every scrollable ancestor, and this one sits inside a column that
+  // has its own. Pinning the transcript should not move anything else.
   useEffect(() => {
-    tail.current?.scrollIntoView({ block: 'end' });
+    const el = box.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
 
   if (!messages.length) {
@@ -20,7 +24,7 @@ export function Transcript({ messages }: { messages: ChatMessage[] }) {
   }
 
   return (
-    <div className="transcript">
+    <div className="transcript" ref={box}>
       {messages.map((message) => (
         <div key={message.id} className={`bubble ${message.role}`}>
           {message.images?.map((src, i) => (
@@ -33,7 +37,6 @@ export function Transcript({ messages }: { messages: ChatMessage[] }) {
           )}
         </div>
       ))}
-      <div ref={tail} />
     </div>
   );
 }

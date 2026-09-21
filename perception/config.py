@@ -32,6 +32,31 @@ class Config:
     # - a file path (loops forever)
     # - a stream URL
     VIDEO_SOURCE: str = _env("VIDEO_SOURCE", "0")
+    # auto | dshow | msmf | v4l2 | avfoundation. `auto` is DirectShow on
+    # Windows: MSMF is OpenCV's default there and is slower to open a Logitech,
+    # sometimes fails on it outright, and orders devices differently from the
+    # names pygrabber reports. See runtime/cameras.py.
+    CAMERA_BACKEND: str = _env("CAMERA_BACKEND", "auto")
+    # Most Logitech webcams offer both YUY2 and MJPG. OpenCV tends to negotiate
+    # YUY2, which at 1080p over USB 2.0 has the bandwidth for about 5 fps; the
+    # same camera does 30 in MJPG. Blank leaves whatever the driver picks.
+    CAMERA_FOURCC: str = _env("CAMERA_FOURCC", "MJPG")
+    # 720p, not "whatever the driver gives us" (0 still means that).
+    #
+    # Webcams commonly *crop* the sensor at 640x480 rather than downscaling,
+    # so the low default narrowed the field of view and cost detections.
+    # Measured on a C920, same scene, 480p -> 720p:
+    #
+    #     person         0.841 -> 0.882   (at a smaller subject area)
+    #     person's face  0.072 -> 0.152   (recorded band is 0.12-0.28)
+    #     chairs tracked  peak 3 -> peak 5
+    #
+    # A camera that cannot do this gives its nearest mode instead; the actual
+    # values are read back after opening and reported by GET /cameras.
+    CAPTURE_WIDTH: int = _i("CAPTURE_WIDTH", 1280)
+    CAPTURE_HEIGHT: int = _i("CAPTURE_HEIGHT", 720)
+    # A camera that has not opened by now is not going to.
+    CAMERA_OPEN_TIMEOUT_S: float = _f("CAMERA_OPEN_TIMEOUT_S", 3.0)
     IMGSZ: int = _i("IMGSZ", 640)  # 320 on the Mac
     CAPTURE_FPS_CAP: float = _f("CAPTURE_FPS_CAP", 60.0)
     STREAM_FPS: float = _f("STREAM_FPS", 15.0)  # MJPEG encode rate
@@ -172,6 +197,11 @@ class Config:
     # 5. Server
     HOST: str = _env("HOST", "0.0.0.0")
     PORT: int = _i("PORT", 8001)
+    # Names or roles to treat as not installed, comma separated. The point is
+    # A/B testing without uninstalling: DISABLE_MODELS=hands,wholebody,ocr
+    # puts the pipeline back to how it behaved before those packages arrived,
+    # and unsetting it puts them back. Nothing is removed from disk.
+    DISABLE_MODELS: str = _env("DISABLE_MODELS", "")
     MODELS_CONFIG: Path = Path(_env("MODELS_CONFIG", str(_HERE / "models.yaml")))
     WEIGHTS_DIR: Path = Path(_env("WEIGHTS_DIR", str(_HERE / "weights")))
     LOG_LEVEL: str = _env("LOG_LEVEL", "INFO")

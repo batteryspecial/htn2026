@@ -9,21 +9,28 @@
 
 import { useEffect, useState } from 'react';
 import type { CompilerMode, Preferences, Settings } from '../../config/settings';
-import type { ModelEntry } from '../../contracts/behavior';
+import type { CameraEntry, ModelEntry } from '../../contracts/behavior';
 import { CheckField, SelectField, TextField } from './Field';
 
 export interface SettingsDrawerProps {
   open: boolean;
   settings: Settings;
   models: ModelEntry[];
+  /** GET /cameras — enumerated by the pipeline, which is what opens them. */
+  cameras: CameraEntry[];
   onSave: (patch: Partial<Preferences>) => void;
   /** POST /model — the detector is pipeline state, not a field on a spec. */
   onSelectModel: (name: string) => void;
+  /** POST /camera — likewise: the camera belongs to the pipeline. */
+  onSelectCamera: (name: string) => void;
+  /** Re-scan for devices. Opens each idle one, so it takes a few seconds. */
+  onRescanCameras: () => void;
   onClose: () => void;
 }
 
 export function SettingsDrawer(
-  { open, settings, models, onSave, onSelectModel, onClose }: SettingsDrawerProps,
+  { open, settings, models, cameras, onSave, onSelectModel, onSelectCamera,
+    onRescanCameras, onClose }: SettingsDrawerProps,
 ) {
   const [draft, setDraft] = useState<Preferences>(settings);
 
@@ -48,11 +55,36 @@ export function SettingsDrawer(
     }))
     : [{ value: draft.detector, label: `${draft.detector} (registry unreachable)` }];
 
+  // Named, never indexed: index 2 is the webcam until something is replugged
+  // and then it is the built-in camera, which is a silent way to demo the
+  // wrong lens. An entry the pipeline could not open is offered greyed out
+  // rather than hidden, so "my webcam is not listed" and "my webcam will not
+  // open" look different.
+  const cameraOptions = cameras.length
+    ? cameras.map((c) => ({
+      value: c.name,
+      label: [
+        c.name,
+        c.width && c.height ? `${c.width}×${c.height}` : null,
+        c.available === false ? 'WILL NOT OPEN' : null,
+        c.active ? 'live' : null,
+      ].filter(Boolean).join(' · '),
+      disabled: c.available === false,
+    }))
+    : [{ value: draft.camera, label: draft.camera || 'pipeline unreachable' }];
+
+  const activeCamera = cameras.find((c) => c.active)?.name ?? '';
+
   const save = () => {
     onSave({ ...draft, lang: draft.lang.trim() || 'en-US' });
     // A BehaviorSpec carries no model, so switching detector is its own call.
     // Behaviours the new model cannot serve are paused with a reason, not lost.
     if (draft.detector !== settings.detector) onSelectModel(draft.detector);
+    // Compared against what the pipeline reports as live, not against the
+    // stored preference: the preference can be a camera from another machine,
+    // or from before a reboot, and re-sending the one already running would
+    // drop frames for nothing.
+    if (draft.camera && draft.camera !== activeCamera) onSelectCamera(draft.camera);
     onClose();
   };
 
@@ -84,6 +116,27 @@ export function SettingsDrawer(
               From <code>GET /models</code>; applied with <code>POST /model</code> on save.
               Behaviours the new model cannot serve are paused with a reason and resume
               on their own.
+            </>
+          }
+        />
+
+        <SelectField
+          label="Camera"
+          value={draft.camera || activeCamera}
+          onChange={(v) => set('camera', v)}
+          options={cameraOptions}
+          hint={
+            <>
+              From <code>GET /cameras</code> on the pipeline, applied with{' '}
+              <code>POST /camera</code> on save. Enumerated where the camera is
+              actually opened, not in this browser. Behaviours keep running;
+              tracking resets, because track ids do not survive a change of lens.
+              {' '}
+              <button type="button" className="link-btn" onClick={onRescanCameras}>
+                Re-scan
+              </button>{' '}
+              opens each idle device to read its resolution, which takes a few
+              seconds.
             </>
           }
         />

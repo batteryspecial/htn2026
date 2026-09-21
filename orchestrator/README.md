@@ -159,10 +159,11 @@ way.
 | `probe_phrases` | `POST /probe` | **does this wording find anything, in this room, right now** |
 | `count_objects` | `POST /query/count` | "how many…" — median over a window, installs nothing |
 | `look` | `POST /query/look` | what is tracked now, with attribute scores |
-| `describe_scene` | `POST /describe` | "what's on the table?" — sweeps a broad vocabulary |
+| `describe_scene` | `POST /describe` + `/snapshot` + vision model | "what's on the table?" — sweeps a broad vocabulary |
 | `add_reference` | `POST /references` | "follow **him**" with no photo |
 | `set_model` | `POST /model` | demo 16. Behaviours the new model cannot serve pause and resume themselves |
 | `set_hud` | `POST /hud` | the label burned onto the projected frame |
+| `wait_for_behavior` | `GET /behaviors` until REACHED | pan before counting; cancellable, bounded wait |
 | `say` | — | one spoken sentence, for alerts |
 
 The argument schemas are the shared pydantic contracts, imported from
@@ -245,10 +246,11 @@ it, and race to an empty pipeline.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/chat` | `text` + optional `images[]`, multipart. The turn. Uploads are registered as references before the agent thinks |
+| POST | `/chat` | `text` + repeated `images` fields + optional `turn` id, multipart. The turn. Uploads are registered as references before the agent thinks |
 | WS | `/ws/trace` | thought · tool_call · tool_result · say · reply · event · timer · error |
-| POST | `/instruction` | `{text}`. Kept as an alias so the console's LIVE mode never breaks |
-| WS | `/ws/status` | the stage strip, derived from the trace |
+| POST | `/stop` | Cancels active/queued turns, clears behaviors and HUD; optional `{turn}` also cancels an upload still arriving |
+| POST | `/instruction` | `{text}`. Compatibility alias; the console uses `/chat` |
+| WS | `/ws/status` | Compatibility stream; the console uses `/ws/trace` |
 | GET | `/health` | ours, plus whether perception is reachable |
 
 ---
@@ -265,11 +267,10 @@ python main.py                  # :8000
 The key lives here, not in the browser. `frontend/.env.local` holds service
 URLs only.
 
-`orchestrator/.gitignore` currently excludes `/documents`, which is where
-`SELECTORS.md` and `BEHAVIORS.md` live — and the system prompt is built from
-those two files. A fresh clone has no prompt, and `agent/prompts.py` raises
-saying so rather than quietly compiling worse specs. Un-ignore the folder
-before anyone else clones this.
+`documents/SELECTORS.md` and `documents/BEHAVIORS.md` are required runtime
+assets: the system prompt is built from them. They are deliberately not ignored,
+and `agent/prompts.py` raises at startup if either is missing rather than quietly
+compiling worse specs.
 
 ## Layout
 
@@ -278,8 +279,34 @@ orchestrator/
   main.py  config.py  contracts.py        <- contracts re-exports linker/schemas.py
   documents/   SELECTORS.md BEHAVIORS.md  <- the prompt, as documents
   agent/       graph.py runner.py prompts.py llm.py
-  tools/       perception.py registry.py
+  tools/       perception.py registry.py scene.py waiting.py
   memory/      store.py seed.py
   events/      watcher.py
   app/         api.py trace.py
 ```
+
+## Integration notes
+
+`/chat` returns `{turn, reply, seconds, ok, outcome, behaviors}`. `outcome` is
+`reply`, `applied`, or `error`; `behaviors` contains ids and specs successfully
+accepted during that turn. Model failures and turn deadlines return `ok: false`;
+an HTTP 200 alone does not mean the requested action worked. Trace replies carry
+the same turn id, outcome, and behavior receipts. Recoverable tool errors stay
+in the trace so the agent can correct its arguments before finishing.
+
+The default turn deadline is 180 seconds. The browser allows 195 seconds; keep
+these aligned if `ORCH_TURN_TIMEOUT_S` changes. Each user turn includes the
+current raw camera frame so ambiguous names can be grounded visually. Three
+completed user turns are retained in process as text/tool context, including
+reference ids; base64 camera and upload images are not retained. STOP clears
+that context. This is one shared camera/operator session, not separate
+per-browser sessions or durable chat storage.
+
+Event work is bounded and deduplicated across socket reconnects. Replayed
+events do not wake the model again. Snapshot retrieval and phrase-memory I/O
+do not block the server's event loop. Successful behavior installation is not
+recorded as proof that a target was acquired; probes provide measured evidence.
+
+`pan_to` currently guides a person turning the camera using arrows and measured
+odometry. It does not drive a physical motor. Available capabilities come from
+the perception registry; the root README includes future hardware/skill plans.

@@ -44,6 +44,7 @@ def model(monkeypatch):
     """Script the model this app's turns will run on."""
     def install(scripted):
         monkeypatch.setattr("agent.graph.chat_model", lambda: scripted)
+        monkeypatch.setattr("agent.graph.vision_model", lambda: scripted)
         return scripted
     return install
 
@@ -87,13 +88,15 @@ def test_the_memory_can_be_inspected_for_tuning(client):
 # 2. Turns ------------------------------------------------------------------
 
 def test_a_chat_turn_returns_the_reply_and_how_long_it_took(client, model):
-    model(says("Highlighting everyone."))
+    model(says("Hello."))
 
-    body = client.post("/chat", data={"text": "highlight everyone"}).json()
+    body = client.post("/chat", data={"text": "hello"}).json()
 
-    assert body["reply"] == "Highlighting everyone."
+    assert body["reply"] == "Hello."
     assert body["turn"].startswith("turn-")
     assert isinstance(body["seconds"], float)
+    assert body["outcome"] == "reply"
+    assert body["behaviors"] == []
 
 
 def test_a_chat_turn_actually_configures_the_pipeline(client, model, pipeline):
@@ -101,9 +104,13 @@ def test_a_chat_turn_actually_configures_the_pipeline(client, model, pipeline):
                  {"kind": "highlight", "subject": {"detect": ["person"]}}))
           .then(says("Done.")))
 
-    client.post("/chat", data={"text": "highlight everyone"})
+    body = client.post("/chat", data={"text": "highlight everyone"}).json()
 
     assert pipeline.behaviors["b1"]["kind"] == "highlight"
+    assert body["outcome"] == "applied"
+    assert body["behaviors"][0]["id"] == "b1"
+    assert body["behaviors"][0]["spec"]["kind"] == "highlight"
+    assert body["behaviors"][0]["spec"]["subject"]["detect"] == ["person"]
 
 
 def test_an_empty_turn_is_refused_rather_than_sent_to_the_model(client, model):
@@ -129,7 +136,9 @@ def test_a_photo_with_no_words_is_a_turn(client, model, pipeline):
 
 def test_the_console_contract_still_works(client, model):
     """`/instruction` is what LIVE mode shipped against; it must not break."""
-    model(says("Tracking the duck."))
+    model(calls(("start_behavior", {
+        "kind": "track", "subject": {"detect": ["duck"]},
+    })).then(says("Tracking the duck.")))
 
     body = client.post("/instruction", json={"text": "track the duck"}).json()
 
@@ -183,9 +192,9 @@ def test_the_status_strip_only_carries_stages_it_understands(client, model):
     with client.websocket_connect("/ws/status") as socket:
         client.post("/chat", data={"text": "highlight everyone"})
 
-        stages = [socket.receive_json() for _ in range(3)]
+        stages = [socket.receive_json() for _ in range(2)]
 
-    assert [s["stage"] for s in stages] == ["received", "applied", "active"]
+    assert [s["stage"] for s in stages] == ["received", "applied"]
     assert all(s["instruction_id"].startswith("turn-") for s in stages)
 
 

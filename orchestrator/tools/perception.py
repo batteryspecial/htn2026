@@ -95,6 +95,12 @@ class Perception:
         """POST /behaviors. A 422 names exactly what was wrong with the spec."""
         return await self._call("POST", "/behaviors", json=spec)
 
+    async def behavior_status(self, behavior_id: str) -> Result:
+        return await self._call("GET", f"/behaviors/{behavior_id}/status")
+
+    async def operation_status(self, operation_id: str) -> Result:
+        return await self._call("GET", f"/operations/{operation_id}")
+
     async def list_behaviors(self) -> Result:
         return await self._call("GET", "/behaviors")
 

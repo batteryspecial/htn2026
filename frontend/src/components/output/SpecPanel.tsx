@@ -9,6 +9,9 @@ import { StageStrip } from './StageStrip';
 const placeholderFor = (run: RunView): string => {
   if (run.busy) return '// compiling…';
   if (run.badge.text === 'AWAITING SPEC') return '// accepted — waiting for the compiled event';
+  if (run.badge.text === 'REPLY') return '// reply received — no behavior started by this turn';
+  if (run.badge.kind === 'fail') return '// turn failed — see the reply and agent trace';
+  if (run.badge.text === 'RECALLED') return '// recalled reply — no behavior spec';
   return '// awaiting an instruction';
 };
 

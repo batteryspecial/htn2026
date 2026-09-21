@@ -22,6 +22,7 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import replace
 
 from behaviors.base import Behavior
 from behaviors.kinds import build as build_behavior
@@ -62,6 +63,8 @@ class Builder:
         self._seq = itertools.count(1)
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
+        self._reference_done = threading.Condition()
+        self._reference_results: dict[str, Applied | Rejected] = {}
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._inflight = 0
@@ -70,10 +73,9 @@ class Builder:
     # 1. Submitting ------------------------------------------------------
     def _submit(self, op: Op) -> Op:
         with self._lock:
-            op = Op(kind=op.kind, seq=next(self._seq), behavior_id=op.behavior_id,
-                    spec=op.spec, model=op.model)
+            op = replace(op, seq=next(self._seq))
             self._inflight += 1
-            self._out.put(Accepted(op))
+            self._publish(Accepted(op))
             self._q.put(op)
         return op
 
@@ -94,14 +96,40 @@ class Builder:
         return self._submit(Op("set_model", model=model))
 
     def add_reference(self, image=None, vector=None, label: str | None = None) -> str:
-        """Register a reference. Returns the id at once; encoding happens on
-        the worker, because it is a CLIP forward pass."""
+        """Queue a reference; the API waits on ``wait_reference`` for encoding."""
         import uuid
 
         ref_id = f"r{uuid.uuid4().hex[:8]}"
         self._submit(Op("add_reference", ref_id=ref_id, image=image,
                         vector=vector, label=label))
         return ref_id
+
+    def wait_reference(self, ref_id: str,
+                       timeout: float = 10.0) -> Applied | Rejected | None:
+        """Wait until a submitted reference was encoded or rejected.
+
+        Only the reference HTTP route uses this acknowledgement. Behaviour
+        and model changes remain asynchronous so the frame loop never waits.
+        """
+        deadline = time.monotonic() + timeout
+        with self._reference_done:
+            while ref_id not in self._reference_results:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._reference_done.wait(remaining)
+            return self._reference_results.pop(ref_id)
+
+    def _publish(self, outcome: Outcome) -> None:
+        self._out.put(outcome)
+        if (isinstance(outcome, (Applied, Rejected))
+                and outcome.op.kind == "add_reference"
+                and outcome.op.ref_id):
+            with self._reference_done:
+                self._reference_results[outcome.op.ref_id] = outcome
+                if len(self._reference_results) > 200:
+                    self._reference_results.pop(next(iter(self._reference_results)))
+                self._reference_done.notify_all()
 
     @property
     def idle(self) -> bool:
@@ -145,7 +173,7 @@ class Builder:
                 self._process(op)
             except Exception as exc:  # a dead worker takes the demo with it
                 log.exception("builder failed on %s", op.describe())
-                self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+                self._publish(Rejected(op, f"{type(exc).__name__}: {exc}"))
             finally:
                 with self._lock:
                     self._inflight -= 1
@@ -163,37 +191,40 @@ class Builder:
                     op.behavior_id, op.spec, index=len(behaviors),
                     taken={b.color for b in behaviors.values()})
             except Exception as exc:
-                self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+                self._publish(Rejected(op, f"{type(exc).__name__}: {exc}"))
                 return
         elif op.kind == "remove_behavior":
             if op.behavior_id not in behaviors:
-                self._out.put(Rejected(op, f"no behaviour {op.behavior_id!r}"))
+                self._publish(Rejected(op, f"no behaviour {op.behavior_id!r}"))
                 return
             behaviors.pop(op.behavior_id)
         elif op.kind == "clear":
             behaviors = {}
         elif op.kind == "set_model":
             if op.model == model:
-                self._out.put(Rejected(op, f"already using {op.model!r}"))
+                self._publish(Rejected(op, f"already using {op.model!r}"))
                 return
             model, reset = op.model, True
         elif op.kind == "add_reference":
             try:
                 self._register(op)
             except Exception as exc:
-                self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+                self._publish(Rejected(op, f"{type(exc).__name__}: {exc}"))
                 return
 
         try:
             world = self._assemble(op, model, behaviors)
         except Exception as exc:
             log.warning("%s failed: %s", op.describe(), exc)
-            self._out.put(Rejected(op, f"{type(exc).__name__}: {exc}"))
+            if op.kind == "add_reference" and op.ref_id:
+                self.references.items.pop(op.ref_id, None)
+            self._publish(Rejected(op, f"{type(exc).__name__}: {exc}"))
             return
 
         self.world = world
         self.applied_count += 1
-        self._out.put(Applied(op, world, time.perf_counter() - started, reset_tracking=reset))
+        self._publish(Applied(
+            op, world, time.perf_counter() - started, reset_tracking=reset))
 
     def _register(self, op: Op) -> None:
         """Encode an uploaded photo, or store an embedding taken from a frame."""

@@ -32,6 +32,7 @@ def runner(perception, memory):
 def scripted(monkeypatch):
     def install(model):
         monkeypatch.setattr("agent.graph.chat_model", lambda: model)
+        monkeypatch.setattr("agent.graph.vision_model", lambda: model)
         return model
     return install
 
@@ -39,12 +40,12 @@ def scripted(monkeypatch):
 # 1. A plain turn -----------------------------------------------------------
 
 async def test_a_turn_comes_back_with_an_id_a_reply_and_a_duration(runner, scripted):
-    scripted(says("Highlighting everyone."))
+    scripted(says("Hello."))
 
-    result = await runner.user_turn("highlight everyone")
+    result = await runner.user_turn("hello")
 
     assert result.turn.startswith("turn-")
-    assert result.reply == "Highlighting everyone."
+    assert result.reply == "Hello."
     assert result.seconds >= 0.0
 
 
@@ -55,6 +56,30 @@ async def test_each_turn_gets_its_own_id(runner, scripted):
     second = await runner.user_turn("two")
 
     assert first.turn != second.turn
+
+
+async def test_a_plain_turn_includes_the_current_unannotated_frame(runner, scripted):
+    model = scripted(says("I can see the current scene."))
+
+    await runner.user_turn("follow Walnut")
+
+    human = next(m for m in model.seen[0] if not isinstance(m.content, str))
+    assert any(p.get("text", "").startswith("Current unannotated camera frame")
+               for p in human.content)
+    assert any(p.get("type") == "image_url" for p in human.content)
+
+
+async def test_live_frames_are_not_retained_in_conversation_history(runner, scripted):
+    model = scripted(says("First.").then(says("Second.")))
+
+    await runner.user_turn("first turn")
+    await runner.user_turn("second turn")
+
+    image_parts = [part for message in model.seen[1]
+                   if not isinstance(message.content, str)
+                   for part in message.content
+                   if part.get("type") == "image_url"]
+    assert len(image_parts) == 1
 
 
 async def test_what_the_operator_said_opens_the_trace(runner, scripted, trace):
@@ -185,15 +210,18 @@ async def test_two_turns_arriving_together_do_not_interleave(runner, scripted, p
     model = scripted(ConcurrencyProbe(*says("Done.").script))
 
     replies = await asyncio.gather(
-        runner.user_turn("highlight everyone"),
-        runner.user_turn("count the people"),
+        runner.user_turn("hello one"),
+        runner.user_turn("hello two"),
     )
 
     assert not model.overlapped
     assert [r.reply for r in replies] == ["Done.", "Done."]
     # Grounding reads three endpoints in a fixed order. Two clean runs of it,
     # rather than six calls shuffled together, is the lock doing its job.
-    assert pipeline.paths("GET") == ["/behaviors", "/health", "/models"] * 2
+    assert pipeline.paths("GET") == [
+        "/snapshot", "/behaviors", "/health", "/models",
+        "/snapshot", "/behaviors", "/health", "/models",
+    ]
 
 
 # 5. Failure ----------------------------------------------------------------

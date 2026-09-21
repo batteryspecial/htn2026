@@ -25,6 +25,7 @@ network — the right mode for an offline venue.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -34,6 +35,28 @@ from config import CFG
 log = logging.getLogger("orchestrator.memory")
 
 TABLE = "phrases"
+
+# These words describe the instruction, not the thing being detected. Matching
+# them (or the prose in a measurement's note) made an unknown name such as
+# "follow my Walnut" retrieve unrelated ducks and people.
+_QUERY_WORDS = frozenset("""
+    a an the this that these those i me my mine we us our ours you your yours
+    he him his she her hers it its they them their theirs s
+    and or but if then than as at by for from in into of on onto to with without
+    is are was were be been being do does did have has had can could would should
+    will may might not no any all each every some something anything please
+    track tracking follow following watch watching highlight highlighting
+    detect detecting find finding count counting show showing tell let want
+    need keep look looking see seeing get gets got start stop
+""".split())
+
+
+def _terms(text: str) -> set[str]:
+    """Conservative subject words, shared by all retrieval modes."""
+    words = re.findall(r"[^\W_]+", text.casefold().replace("'s", "").replace("’s", ""))
+    return {word[:-1] if len(word) > 3 and word.endswith("s")
+            and not word.endswith("ss") else word
+            for word in words if word not in _QUERY_WORDS and len(word) > 1}
 
 
 @dataclass
@@ -73,6 +96,7 @@ class PhraseMemory:
         self._table = None
         self._fallback: list[PhraseRecord] = []
         self._embedder = None
+        self._vector_dim = self._expected_vector_dim(self.embed_model)
         #: Whether a usable full-text index exists, and whether rows have been
         #: written since it was last built.
         self._fts = False
@@ -93,6 +117,7 @@ class PhraseMemory:
             self._embedder = self._make_embedder()
             if TABLE in db.table_names():
                 self._table = db.open_table(TABLE)
+                self._validate_vector_schema()
             else:
                 self._table = db.create_table(TABLE, data=self._seed_rows(db))
                 self._ensure_fts()
@@ -109,10 +134,40 @@ class PhraseMemory:
             return None
         try:
             from langchain_openai import OpenAIEmbeddings
-            return OpenAIEmbeddings(model=self.embed_model, api_key=CFG.api_key)
+            return OpenAIEmbeddings(
+                model=self.embed_model, api_key=CFG.api_key,
+                request_timeout=CFG.tool_timeout_s, max_retries=1,
+            )
         except Exception as exc:                        # noqa: BLE001
             log.warning("no embedder (%s) — using full-text search", exc)
             return None
+
+    @staticmethod
+    def _expected_vector_dim(model: str | None) -> int:
+        if model == "text-embedding-3-large":
+            return 3072
+        if model in {"text-embedding-3-small", "text-embedding-ada-002"}:
+            return 1536
+        return 8
+
+    def _validate_vector_schema(self) -> None:
+        """Never mix embedding widths in a fixed-size LanceDB column."""
+        if self._table is None:
+            return
+        try:
+            vector_type = self._table.schema.field("vector").type
+            stored = int(getattr(vector_type, "list_size", 0) or 0)
+        except Exception:  # pragma: no cover - backend/version dependent
+            return
+        if stored:
+            if self._embedder is not None and stored != self._vector_dim:
+                log.warning(
+                    "phrase-memory vector width is %d but %s uses %d; "
+                    "using full-text until the table is explicitly rebuilt",
+                    stored, self.embed_model, self._vector_dim,
+                )
+                self._embedder = None
+            self._vector_dim = stored
 
     def _ensure_fts(self) -> None:
         """(Re)build the full-text index.
@@ -162,12 +217,12 @@ class PhraseMemory:
         if self._embedder is None:
             # LanceDB wants a consistent width; a zero vector keeps the schema
             # stable and search falls through to full-text.
-            return [0.0] * 8
+            return [0.0] * self._vector_dim
         try:
             return self._embedder.embed_query(text)
         except Exception as exc:                        # noqa: BLE001
             log.warning("embedding failed (%s) — storing without a vector", exc)
-            return [0.0] * 8
+            return [0.0] * self._vector_dim
 
     # 2. Writing ---------------------------------------------------------
 
@@ -222,7 +277,16 @@ class PhraseMemory:
         entry about coats at the top of a question about ducks, which is
         worse than useless — the agent would try it.
         """
+        terms = _terms(subject)
+        if not terms or limit <= 0:
+            return []
         rows = self._search(subject, limit * 4)
+        # Nearest neighbors always exist, even for an entirely unknown subject.
+        # Reciprocal-rank fusion is an ordering, not a relevance threshold.
+        # Require a subject/phrase anchor before presenting a remembered prior;
+        # the agent can still discover new synonyms with a live probe.
+        rows = [row for row in rows if terms & _terms(
+            f"{row.get('subject', '')} {row.get('phrase', '')}")]
         if not rows:
             return []
 
@@ -265,35 +329,35 @@ class PhraseMemory:
         share vocabulary — "a person wearing a dark jacket" and "a person
         wearing a cream coat" are neighbours in embedding space while being
         opposite in meaning, and a query about a duck can pull back coats.
-        Full-text alone has the opposite failure: it cannot match "duck" to
-        "rubber duck toy" unless the words line up.
-
-        Running both and fusing with reciprocal rank keeps an entry only when
-        at least one retriever is confident, which is what this corpus needs.
+        Full-text supplies exact subject anchors while vector search helps
+        order their synonyms. The caller still filters out unrelated neighbors:
+        reciprocal rank by itself does not establish relevance.
         """
+        terms = _terms(query)
         if self._table is None:
             return [asdict(r) for r in self._fallback
-                    if query.lower() in r.text().lower()][:limit]
+                    if terms & _terms(f"{r.subject} {r.phrase}")][:limit]
 
         if self._dirty:
             self._ensure_fts()
 
         vector = self._embed(query) if self._embedder is not None else None
         has_vector = vector is not None and any(vector)
+        text_query = " ".join(sorted(terms))
 
         try:
             if has_vector and self._fts:
                 return (self._table.search(query_type="hybrid")
-                        .vector(vector).text(query)
+                        .vector(vector).text(text_query)
                         .limit(limit).to_list())
             if has_vector:
                 return self._table.search(vector).limit(limit).to_list()
             if self._fts:
-                return self._table.search(query, query_type="fts").limit(limit).to_list()
+                return self._table.search(text_query, query_type="fts").limit(limit).to_list()
         except Exception as exc:                        # noqa: BLE001
             log.warning("phrase memory search failed (%s) — trying full-text", exc)
             try:
-                return self._table.search(query, query_type="fts").limit(limit).to_list()
+                return self._table.search(text_query, query_type="fts").limit(limit).to_list()
             except Exception as inner:                  # noqa: BLE001
                 log.warning("full-text search failed too: %s", inner)
                 return []

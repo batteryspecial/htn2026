@@ -113,3 +113,19 @@
   color: var(--ink-3);
   flex: 0 0 auto;
 }
+
+/* An inline action inside a field's hint text — "Re-scan" for cameras. Sized
+   to the sentence it sits in rather than to the button row below it. */
+.link-btn {
+  font: inherit;
+  font-weight: 700;
+  color: var(--oxblood);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid var(--ochre);
+  padding: 0;
+  cursor: pointer;
+}
+
+.link-btn:hover { color: var(--rust); border-bottom-color: var(--rust); }
+.link-btn:disabled { color: var(--ink-3); border-bottom-color: var(--ink-3); cursor: progress; }

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { EXAMPLE_INSTRUCTIONS } from '../../config/constants';
 import type { ChatMessage, TimerView } from '../../hooks/useRetaskRun';
 import type { SpeechControls } from '../../hooks/useSpeechRecognition';
@@ -27,8 +27,16 @@ export function ChatPanel(props: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [attached, setAttached] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+
+  useEffect(() => {
+    const urls = attached.map((file) => URL.createObjectURL(file));
+    setPreviews(urls);
+    return () => urls.forEach((url) => URL.revokeObjectURL(url));
+  }, [attached]);
 
   const submit = useCallback((value: string) => {
+    if (busy) return;
     if (speech.listening) speech.stop();
     if (!value.trim() && !attached.length) {
       inputRef.current?.focus();
@@ -37,7 +45,7 @@ export function ChatPanel(props: ChatPanelProps) {
     onSend(value, attached);
     setAttached([]);
     if (fileRef.current) fileRef.current.value = '';
-  }, [attached, onSend, speech]);
+  }, [attached, busy, onSend, speech]);
 
   return (
     <Panel
@@ -78,7 +86,7 @@ export function ChatPanel(props: ChatPanelProps) {
           <ul className="attachments">
             {attached.map((file, i) => (
               <li key={`${file.name}-${i}`}>
-                <img src={URL.createObjectURL(file)} alt="" />
+                <img src={previews[i]} alt="" />
                 <span className="row-main">{file.name}</span>
                 <button
                   type="button"
@@ -98,6 +106,7 @@ export function ChatPanel(props: ChatPanelProps) {
               key={example}
               type="button"
               className="chip"
+              disabled={busy}
               onClick={() => { onTextChange(example); submit(example); }}
             >
               {example}
@@ -109,6 +118,7 @@ export function ChatPanel(props: ChatPanelProps) {
           <button
             type="button"
             className={`btn primary ${busy ? 'busy' : ''}`}
+            disabled={busy}
             onClick={() => submit(text)}
           >
             SEND
@@ -137,7 +147,7 @@ export function ChatPanel(props: ChatPanelProps) {
             type="button"
             className="btn stop"
             onClick={props.onStop}
-            title="DELETE /behaviors — every behaviour stops"
+            title="Cancel the agent turn and stop all behaviors"
           >
             STOP
           </button>

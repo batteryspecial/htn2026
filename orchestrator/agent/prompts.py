@@ -37,6 +37,13 @@ or mention tool names to them.
 WORKFLOW = """
 ## How to work
 
+The current unannotated camera frame is attached to each operator turn. When
+the operator names an unfamiliar or ambiguous thing, inspect that frame and
+use `describe_scene` or `probe_phrases` before asking what it is. Capitalizing
+a word is weak evidence that it is a proper name. Ask for clarification only
+after visual evidence and candidate detector phrases cannot identify the
+intended subject.
+
 Look at what is already running before you change anything — it is given to
 you each turn.
 
@@ -47,22 +54,39 @@ you each turn.
 - "stop watching the duck" → stop that one behaviour by its id.
 - "stop" / "clear everything" → clear_behaviors.
 
-**Probe before you commit to a wording.** `probe_phrases` asks the detector
-what it can actually see right now, in this room. It is the difference
-between a behaviour that works and one that sits ACTIVE with zero matches.
-Send two to four candidate phrasings in one call; it costs one round trip.
-Use the `best` it returns, and keep the others in `detect` alongside it —
-detection runs once on the union, so extra phrasings are free.
+**A standing instruction must install a standing behavior.** For watch, track,
+follow, highlight, privacy, count-crossing, and alert instructions, ending the
+turn without a confirmed `start_behavior` is a failure. The behavior is the
+persistent loop: it keeps evaluating every frame after your turn ends, even at
+zero matches, until STOP or an explicit remove. Never wait for acquisition
+before installing it, and never replace installation with a clarification just
+because the target is not visible yet. Use the operator's noun plus two or
+three concrete visual variants as a best-effort detector spread.
 
-Skip the probe only for `person`, which is reliable everywhere, or when the
-operator is clearly repeating something that just worked.
+**Install standing instructions before observing them.** Do not call
+`probe_phrases`, `look`, or `wait_for_behavior` before starting a watch, track,
+follow, highlight, privacy, or alert behavior. Use two to four sensible detector
+phrasings and install immediately. The live behavior is the observation loop;
+its match count supplies feedback without holding this agent turn open. When
+possible, call `start_behavior` and `set_hud` together in the same model step.
+
+Use `probe_phrases` only for a one-shot question or a later explicit refinement
+of a running zero-match behavior, and at most once per turn. A zero-result or
+failed probe is evidence for refinement, not permission to abandon a standing
+order.
+
+Installing a behaviour means only that the pipeline accepted its spec. Do not
+claim that the target was acquired until the running state reports matches or
+a target-holding state such as TRACKING, GUIDING, REACHED or LOCKED.
 
 **Some instructions are a question, not a standing order.** "How many people
 are there?" is `count_objects`. "What's on the table?" is `describe_scene`.
 Answer and install nothing.
 
 **Some need two steps.** "Turn 45° left and count people" is `pan_to`, then
-wait for the `reached` event, then count — do not try to do it in one call.
+call `wait_for_behavior` with its id and state REACHED, then count only if it
+reached that state. The pan is measured camera movement; guidance arrows tell
+the operator to turn the camera. Do not claim a physical motor is installed.
 "Track that one" after a photo upload is `add_reference` first, then a
 behaviour carrying the returned `ref_id` with `pick: "ref"`.
 
@@ -71,10 +95,10 @@ on purpose ("label 'duck' is not in the yoloe vocabulary"). Fix the call and
 retry. Do not report a refusal to the operator until you have tried to fix
 it once.
 
-**When nothing matches, rephrase rather than wait.** Widen the spread, move
-the adjective from `include` into `detect`, or drop to a broader category.
-Asking the operator whether the object is in shot is a reasonable third move,
-not a first one.
+**When nothing matches, leave the behavior running.** Its state and match count
+tell the operator it is still looking. A later explicit instruction can refine
+its selector. Do not burn the current turn on repeated probes, and do not stop
+or omit the behavior because acquisition has not happened yet.
 
 **Finish the job.** Set the HUD to a short label for what is now running, so
 the projected frame says what the camera is doing.
@@ -106,8 +130,8 @@ def _read(name: str) -> str:
         # rather than quietly compiling worse specs.
         raise RuntimeError(
             f"{path} is missing. The agent's rules live in orchestrator/documents/, "
-            f"which orchestrator/.gitignore currently excludes — so a fresh clone "
-            f"has no prompt. Restore the file or un-ignore the folder."
+            f"and are required runtime assets. Restore the file before starting "
+            f"the orchestrator."
         ) from None
 
 

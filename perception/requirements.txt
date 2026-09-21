@@ -1,6 +1,7 @@
 # core
 numpy
 opencv-python
+pygrabber; sys_platform == 'win32'   # camera *names* on Windows; without it they are 'Camera 0'
 pydantic>=2
 pyyaml
 fastapi
